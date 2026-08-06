@@ -8077,6 +8077,12 @@ bool HTMLMediaElement::ShouldStartMediaControlKeyListener() const {
     return true;
   }
 
+    // ★ 只对视频元素启动媒体控制，纯音频不触发 onPlay/onPause 系列回调
+  if (!IsVideo()) {
+    MEDIACONTROL_LOG("Not listening because it's an audio element");
+    return false;
+  }
+
   // In order to filter out notification-ish sound, we use this pref to set the
   // eligible media duration to prevent showing media control for those short
   // sound.
@@ -8093,7 +8099,7 @@ bool HTMLMediaElement::ShouldStartMediaControlKeyListener() const {
   // `ComputedVolume()` would return the final volume applied the affection made
   // by audio channel, which is used to detect if the tab is muted by audio
   // channel.
-  if (!IsAudible() || ComputedVolume() == 0.0f) {
+  if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
     MEDIACONTROL_LOG("Not listening because media is inaudible");
     return false;
   }
