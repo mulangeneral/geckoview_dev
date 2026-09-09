@@ -15,12 +15,36 @@
 #include "nsError.h"
 #include "nsContentUtils.h"
 #include "nsGlobalWindowInner.h"
+#include "nsSandboxFlags.h"
 #include "mozilla/NullPrincipal.h"
 #include "mozilla/dom/Document.h"
+#include "mozilla/dom/RedirectBlockedEvent.h"
 #include "mozilla/dom/ReferrerInfo.h"
 #include "mozilla/dom/WindowContext.h"
 
 namespace mozilla::dom {
+
+// Fire a "DOMRedirectBlocked" event on the requesting document so that the
+// embedder UI can hear about the blocked redirect and decide whether to
+// allow it. Mirrors nsGlobalWindowOuter::FirePopupBlockedEvent.
+static void FireRedirectBlockedEvent(Document* aDoc, nsIURI* aRedirectURI,
+                                     nsPIDOMWindowInner* aRequestingWindow) {
+  MOZ_ASSERT(aDoc);
+  MOZ_ASSERT(aRedirectURI);
+
+  RedirectBlockedEventInit init;
+  init.mBubbles = true;
+  init.mCancelable = true;
+  init.mRequestingWindow = nsGlobalWindowInner::Cast(aRequestingWindow);
+  init.mRedirectURI = aRedirectURI;
+
+  RefPtr<RedirectBlockedEvent> event = RedirectBlockedEvent::Constructor(
+      aDoc, u"DOMRedirectBlocked"_ns, init);
+
+  event->SetTrusted(true);
+
+  aDoc->DispatchEvent(*event);
+}
 
 already_AddRefed<nsDocShellLoadState> LocationBase::CheckURL(
     nsIURI* aURI, nsIPrincipal& aSubjectPrincipal, ErrorResult& aRv) {
@@ -156,6 +180,23 @@ void LocationBase::SetURI(nsIURI* aURI, nsIPrincipal& aSubjectPrincipal,
     loadState->SetSourceBrowsingContext(sourceWindow->GetBrowsingContext());
     loadState->SetHasValidUserGestureActivation(
         context && context->HasValidTransientUserGestureActivation());
+  }
+
+  // Block content-driven, cross-origin attempts to navigate the top-level
+  // browsing context (e.g. an OAuth callback iframe driving `top.location`),
+  // and notify the embedder via a "DOMRedirectBlocked" event so that it may
+  // allow the navigation. This mirrors how blocked popups are handled.
+  // Sandboxed documents are left to the regular sandboxing checks.
+  if (callerType == CallerType::NonSystem && sourceWindow &&
+      sourceWindow->GetBrowsingContext() != bc && bc->IsTop()) {
+    Document* sourceDoc = sourceWindow->GetDoc();
+    WindowContext* sourceContext = sourceWindow->GetWindowContext();
+    if (sourceDoc && sourceContext &&
+        !(sourceDoc->GetSandboxFlags() & SANDBOXED_TOPLEVEL_NAVIGATION) &&
+        !sourceContext->SameOriginWithTop()) {
+      FireRedirectBlockedEvent(sourceDoc, aURI, sourceWindow);
+      return;
+    }
   }
 
   loadState->SetLoadFlags(nsIWebNavigation::LOAD_FLAGS_NONE);
