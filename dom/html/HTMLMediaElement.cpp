@@ -8099,10 +8099,17 @@ bool HTMLMediaElement::ShouldStartMediaControlKeyListener() const {
   // `ComputedVolume()` would return the final volume applied the affection made
   // by audio channel, which is used to detect if the tab is muted by audio
   // channel.
-  if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
-    MEDIACONTROL_LOG("Not listening because media is inaudible");
-    return false;
-  }
+  // ★ 已注释停用（2026-09-09）：该条件为永不生效的死代码——纯音频元素已在上方
+  // `if (!IsVideo())` 处提前 return false，能执行到这里的必然是视频，`!IsVideo()`
+  // 恒为 false，整个条件永远不成立。此为 fbb40cc04e 有意为之：上游原条件
+  // `if (!IsAudible() || ComputedVolume() == 0.0f)` 会拦截静音视频（旧 AAR 车机日志
+  // "Not listening because media is inaudible" 即此处打印），为满足"视频不论静音都
+  // 触发 onPlay"而加了 `!IsVideo() &&` 前缀。注释掉仅为消除歧义，运行行为无任何变化；
+  // 如需恢复上游"静音媒体不启动监听"的行为，去掉本段注释并同时移除上方 `!IsVideo()` 提前拦截。
+  // if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
+  //   MEDIACONTROL_LOG("Not listening because media is inaudible");
+  //   return false;
+  // }
   return true;
 }
 
