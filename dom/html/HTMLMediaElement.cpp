@@ -594,7 +594,10 @@ class HTMLMediaElement::MediaControlKeyListener final
                      dom::EnumValueToString(aState));
     MOZ_ASSERT(mState != aState, "Should not notify same state again!");
     mState = aState;
-    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState);
+    // 上报元素类型，供 GeckoView 区分音视频并过滤音频 onPlay
+    const bool isVideo = Owner() ? Owner()->IsVideo() : false;
+    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState,
+                                             isVideo);
 
     if (aState == MediaPlaybackState::ePlayed ||
         aState == MediaPlaybackState::ePaused) {
@@ -8077,12 +8080,6 @@ bool HTMLMediaElement::ShouldStartMediaControlKeyListener() const {
     return true;
   }
 
-    // ★ 只对视频元素启动媒体控制，纯音频不触发 onPlay/onPause 系列回调
-  if (!IsVideo()) {
-    MEDIACONTROL_LOG("Not listening because it's an audio element");
-    return false;
-  }
-
   // In order to filter out notification-ish sound, we use this pref to set the
   // eligible media duration to prevent showing media control for those short
   // sound.
@@ -8093,23 +8090,25 @@ bool HTMLMediaElement::ShouldStartMediaControlKeyListener() const {
     return false;
   }
 
+  // ★ 车机私有补丁：视频豁免可听性检查——静音/零音量视频也要注册触发 onPlay
+  // （行车抑制判定依据）。
+  if (IsVideo()) {
+    return true;
+  }
+
   // This includes cases such like `video is muted`, `video has zero volume`,
   // `video's audio track is still inaudible` and `tab is muted by audio channel
   // (tab sound indicator)`, all these cases would make media inaudible.
   // `ComputedVolume()` would return the final volume applied the affection made
   // by audio channel, which is used to detect if the tab is muted by audio
   // channel.
-  // ★ 已注释停用（2026-09-09）：该条件为永不生效的死代码——纯音频元素已在上方
-  // `if (!IsVideo())` 处提前 return false，能执行到这里的必然是视频，`!IsVideo()`
-  // 恒为 false，整个条件永远不成立。此为 fbb40cc04e 有意为之：上游原条件
-  // `if (!IsAudible() || ComputedVolume() == 0.0f)` 会拦截静音视频（旧 AAR 车机日志
-  // "Not listening because media is inaudible" 即此处打印），为满足"视频不论静音都
-  // 触发 onPlay"而加了 `!IsVideo() &&` 前缀。注释掉仅为消除歧义，运行行为无任何变化；
-  // 如需恢复上游"静音媒体不启动监听"的行为，去掉本段注释并同时移除上方 `!IsVideo()` 提前拦截。
-  // if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
-  //   MEDIACONTROL_LOG("Not listening because media is inaudible");
-  //   return false;
-  // }
+  // 上游原条件：音频须可听才注册，注册后可被 MediaSession.pause()/play() 控制；
+  // onPlay 仅视频由 JS 层过滤保证。metadata 未就绪时 IsAudible() 暂为 false，
+  // decoder 报告可听后经 NotifyAudioPlaybackChanged 补注册，不会漏。
+  if (!IsAudible() || ComputedVolume() == 0.0f) {
+    MEDIACONTROL_LOG("Not listening because media is inaudible");
+    return false;
+  }
   return true;
 }
 

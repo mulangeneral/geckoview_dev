@@ -71,8 +71,11 @@ class IMediaInfoUpdater {
   // (1) `eStart` MUST be the first state and `eStop` MUST be the last state
   // (2) Do not notify same state again
   // (3) `ePaused` can only be notified after notifying `ePlayed`.
+  // (4) `aIsVideo`: whether the notifying media is a video element
+  //     (meaningful for `ePlayed`/`ePaused` only).
   virtual void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                          MediaPlaybackState aState) = 0;
+                                          MediaPlaybackState aState,
+                                          bool aIsVideo) = 0;
 
   // Use this method to update the audible state of controlled media, and MUST
   // follow the following rules in which `audible` and `inaudible` should be a
@@ -156,7 +159,8 @@ class MediaStatusManager : public IMediaInfoUpdater {
 
   // IMediaInfoUpdater's methods
   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                  MediaPlaybackState aState) override;
+                                  MediaPlaybackState aState,
+                                  bool aIsVideo) override;
   void NotifyMediaAudibleChanged(uint64_t aBrowsingContextId,
                                  MediaAudibleState aState) override;
   void SetDeclaredPlaybackState(uint64_t aSessionContextId,
@@ -187,6 +191,7 @@ class MediaStatusManager : public IMediaInfoUpdater {
   bool IsMediaAudible() const;
   bool IsMediaPlaying() const;
   bool IsAnyMediaBeingControlled() const;
+  bool IsAnyVideoMediaPlaying() const;
 
   // These events would be notified when the active media session's certain
   // property changes.

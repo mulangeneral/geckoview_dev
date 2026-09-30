@@ -71,23 +71,25 @@ ContentMediaAgent* ContentMediaAgent::Get(BrowsingContext* aBC) {
 }
 
 void ContentMediaAgent::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                                   MediaPlaybackState aState) {
+                                                   MediaPlaybackState aState,
+                                                   bool aIsVideo) {
   MOZ_ASSERT(NS_IsMainThread());
   RefPtr<BrowsingContext> bc = GetBrowsingContextForAgent(aBrowsingContextId);
   if (!bc || bc->IsDiscarded()) {
     return;
   }
 
-  LOG("Notify media %s in BC %" PRId64, ToString(aState).c_str(), bc->Id());
+  LOG("Notify media %s (isVideo=%d) in BC %" PRId64,
+      ToString(aState).c_str(), aIsVideo, bc->Id());
   if (XRE_IsContentProcess()) {
     ContentChild* contentChild = ContentChild::GetSingleton();
-    Unused << contentChild->SendNotifyMediaPlaybackChanged(bc, aState);
+    Unused << contentChild->SendNotifyMediaPlaybackChanged(bc, aState, aIsVideo);
   } else {
     // Currently this only happen when we disable e10s, otherwise all controlled
     // media would be run in the content process.
     if (RefPtr<IMediaInfoUpdater> updater =
             bc->Canonical()->GetMediaController()) {
-      updater->NotifyMediaPlaybackChanged(bc->Id(), aState);
+      updater->NotifyMediaPlaybackChanged(bc->Id(), aState, aIsVideo);
     }
   }
 }

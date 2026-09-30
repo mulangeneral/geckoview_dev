@@ -59,7 +59,8 @@ MOZ_DEFINE_ENUM_CLASS_WITH_BASE_AND_TOSTRING(MediaAudibleState, bool,
  */
 class MediaPlaybackStatus final {
  public:
-  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState);
+  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState,
+                                bool aIsVideo);
   void UpdateMediaAudibleState(uint64_t aContextId, MediaAudibleState aState);
   void UpdateGuessedPositionState(uint64_t aContextId, const nsID& aElementId,
                                   const Maybe<PositionState>& aState);
@@ -67,6 +68,7 @@ class MediaPlaybackStatus final {
   bool IsPlaying() const;
   bool IsAudible() const;
   bool IsAnyMediaBeingControlled() const;
+  bool IsAnyVideoMediaPlaying() const;
   Maybe<PositionState> GuessedMediaPositionState(
       Maybe<uint64_t> aPreferredContextId) const;
 
@@ -118,6 +120,20 @@ class MediaPlaybackStatus final {
 #endif
       mAudibleMediaNum--;
     }
+    // 正在播放的视频数，用于区分音视频（ePlayed/ePaused 维护，必然配对）
+    void IncreasePlayingVideoMediaNum() {
+#ifndef FUZZING_SNAPSHOT
+      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum < mPlayingMediaNum);
+#endif
+      mPlayingVideoMediaNum++;
+    }
+    void DecreasePlayingVideoMediaNum() {
+#ifndef FUZZING_SNAPSHOT
+      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum > 0);
+#endif
+      mPlayingVideoMediaNum--;
+    }
+    bool IsAnyVideoMediaPlaying() const { return mPlayingVideoMediaNum > 0; }
     bool IsPlaying() const { return mPlayingMediaNum > 0; }
     bool IsAudible() const { return mAudibleMediaNum > 0; }
     bool IsAnyMediaBeingControlled() const { return mControlledMediaNum > 0; }
@@ -129,12 +145,14 @@ class MediaPlaybackStatus final {
 
    private:
     /**
-     * The possible value for those three numbers should follow this rule,
+     * The possible value for those numbers should follow this rule,
      * mControlledMediaNum >= mPlayingMediaNum >= mAudibleMediaNum
+     * and mPlayingMediaNum >= mPlayingVideoMediaNum
      */
     uint32_t mControlledMediaNum = 0;
     uint32_t mAudibleMediaNum = 0;
     uint32_t mPlayingMediaNum = 0;
+    uint32_t mPlayingVideoMediaNum = 0;
     uint64_t mContextId = 0;
 
     /**

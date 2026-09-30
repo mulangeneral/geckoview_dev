@@ -31,6 +31,8 @@ interface MediaController : EventTarget {
   readonly attribute boolean isActive;
   readonly attribute boolean isAudible;
   readonly attribute boolean isPlaying;
+  // True if any video media is currently playing in this tab. (车机私有补丁)
+  readonly attribute boolean hasVideoMedia;
   readonly attribute MediaSessionPlaybackState playbackState;
 
   [Throws]
@@ -45,6 +47,7 @@ interface MediaController : EventTarget {
   // Following events would only be dispatched after controller is active.
   attribute EventHandler onmetadatachange;
   attribute EventHandler onplaybackstatechange;
+  attribute EventHandler onvideomediachange;
   attribute EventHandler onpositionstatechange;
   attribute EventHandler onsupportedkeyschange;
 

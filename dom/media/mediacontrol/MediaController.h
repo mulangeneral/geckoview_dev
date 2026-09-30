@@ -95,6 +95,7 @@ class MediaController final : public DOMEventTargetHelper,
   IMPL_EVENT_HANDLER(metadatachange);
   IMPL_EVENT_HANDLER(supportedkeyschange);
   IMPL_EVENT_HANDLER(playbackstatechange);
+  IMPL_EVENT_HANDLER(videomediachange);
   IMPL_EVENT_HANDLER(positionstatechange);
 
   // IMediaController's methods
@@ -114,9 +115,13 @@ class MediaController final : public DOMEventTargetHelper,
   bool IsPlaying() const override;
   bool IsActive() const override;
 
+  // True if any video media is currently playing in this tab. (车机私有补丁)
+  bool HasVideoMedia() const;
+
   // IMediaInfoUpdater's methods
   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                  MediaPlaybackState aState) override;
+                                  MediaPlaybackState aState,
+                                  bool aIsVideo) override;
   void NotifyMediaAudibleChanged(uint64_t aBrowsingContextId,
                                  MediaAudibleState aState) override;
   void SetIsInPictureInPictureMode(uint64_t aBrowsingContextId,

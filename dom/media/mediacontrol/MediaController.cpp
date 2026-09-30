@@ -180,6 +180,8 @@ bool MediaController::IsAudible() const { return IsMediaAudible(); }
 
 bool MediaController::IsPlaying() const { return IsMediaPlaying(); }
 
+bool MediaController::HasVideoMedia() const { return IsAnyVideoMediaPlaying(); }
+
 bool MediaController::IsActive() const { return mIsActive; };
 
 bool MediaController::ShouldPropagateActionToAllContexts(
@@ -251,13 +253,21 @@ void MediaController::Shutdown() {
 }
 
 void MediaController::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                                 MediaPlaybackState aState) {
+                                                 MediaPlaybackState aState,
+                                                 bool aIsVideo) {
   if (mShutdown) {
     return;
   }
-  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState);
+  const bool oldHasVideoMedia = HasVideoMedia();
+  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState,
+                                                 aIsVideo);
   UpdateDeactivationTimerIfNeeded();
   UpdateActivatedStateIfNeeded();
+  // 视频起播/停播而聚合播放态未变时补发事件，供嵌入方刷新 isVideo 缓存；
+  // 须在 UpdateActivatedStateIfNeeded() 之后，否则首次激活被 mIsActive 守卫吞掉
+  if (HasVideoMedia() != oldHasVideoMedia) {
+    DispatchAsyncEvent(u"videomediachange"_ns);
+  }
 }
 
 void MediaController::UpdateDeactivationTimerIfNeeded() {

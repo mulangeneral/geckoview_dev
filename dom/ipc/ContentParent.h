@@ -1240,7 +1240,7 @@ class ContentParent final : public PContentParent,
 
   mozilla::ipc::IPCResult RecvNotifyMediaPlaybackChanged(
       const MaybeDiscarded<BrowsingContext>& aContext,
-      MediaPlaybackState aState);
+      MediaPlaybackState aState, bool aIsVideo);
 
   mozilla::ipc::IPCResult RecvNotifyMediaAudibleChanged(
       const MaybeDiscarded<BrowsingContext>& aContext,

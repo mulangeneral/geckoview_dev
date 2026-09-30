@@ -6726,14 +6726,14 @@ mozilla::ipc::IPCResult ContentParent::RecvTestStorageAccessPermission(
 }
 
 mozilla::ipc::IPCResult ContentParent::RecvNotifyMediaPlaybackChanged(
-    const MaybeDiscarded<BrowsingContext>& aContext,
-    MediaPlaybackState aState) {
+    const MaybeDiscarded<BrowsingContext>& aContext, MediaPlaybackState aState,
+    bool aIsVideo) {
   if (aContext.IsNullOrDiscarded()) {
     return IPC_OK();
   }
   if (RefPtr<IMediaInfoUpdater> updater =
           aContext.get_canonical()->GetMediaController()) {
-    updater->NotifyMediaPlaybackChanged(aContext.ContextId(), aState);
+    updater->NotifyMediaPlaybackChanged(aContext.ContextId(), aState, aIsVideo);
   }
   return IPC_OK();
 }

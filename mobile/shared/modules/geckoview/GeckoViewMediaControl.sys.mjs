@@ -23,6 +23,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
     this.controller.addEventListener("positionstatechange", this, options);
     this.controller.addEventListener("metadatachange", this, options);
     this.controller.addEventListener("playbackstatechange", this, options);
+    this.controller.addEventListener("videomediachange", this, options);
   }
 
   onDestroyBrowser() {
@@ -34,6 +35,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
     this.controller.removeEventListener("positionstatechange", this);
     this.controller.removeEventListener("metadatachange", this);
     this.controller.removeEventListener("playbackstatechange", this);
+    this.controller.removeEventListener("videomediachange", this);
   }
 
   onEnable() {
@@ -134,6 +136,9 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       case "playbackstatechange":
         this.handlePlaybackStateChanged();
         break;
+      case "videomediachange":
+        this.handleVideoMediaChanged();
+        break;
       default:
         warn`Unknown event type ${aEvent.type}`;
         break;
@@ -145,6 +150,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
 
     this.eventDispatcher.sendRequest({
       type: "GeckoView:MediaSession:Activated",
+      isVideo: this.controller.hasVideoMedia,
     });
   }
 
@@ -153,6 +159,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
 
     this.eventDispatcher.sendRequest({
       type: "GeckoView:MediaSession:Deactivated",
+      isVideo: this.controller.hasVideoMedia,
     });
   }
 
@@ -226,9 +233,24 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       return;
     }
 
+    // ★ 纯音频在播不下发 Playing：onPlay 仅代表视频（行车抑制判定依据）；
+    // hasVideoMedia 为"播放中视频数>0"，与可听性无关，静音/零音量视频照常计数；
+    // Paused/None 照常下发，保证焦点释放与会话状态同步
+    if (type === "GeckoView:MediaSession:Playback:Playing" &&
+        !this.controller.hasVideoMedia) {
+      return;
+    }
+
     this.eventDispatcher.sendRequest({
       type,
+      isVideo: this.controller.hasVideoMedia,
     });
+  }
+
+  // 视频起播/停播而播放态未变时，按最新类型重发当前状态（音频在播时视频起播不漏 onPlay）
+  handleVideoMediaChanged() {
+    debug`handleVideoMediaChanged ${this.controller.hasVideoMedia}`;
+    this.handlePlaybackStateChanged();
   }
 }
 

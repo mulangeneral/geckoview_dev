@@ -14,9 +14,10 @@ namespace mozilla::dom {
           ("MediaPlaybackStatus=%p, " msg, this, ##__VA_ARGS__))
 
 void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
-                                                   MediaPlaybackState aState) {
-  LOG("Update playback state '%s' for context %" PRIu64,
-      EnumValueToString(aState), aContextId);
+                                                   MediaPlaybackState aState,
+                                                   bool aIsVideo) {
+  LOG("Update playback state '%s' (isVideo=%d) for context %" PRIu64,
+      EnumValueToString(aState), aIsVideo, aContextId);
   MOZ_ASSERT(NS_IsMainThread());
 
   ContextMediaInfo& info = GetNotNullContextInfo(aContextId);
@@ -26,9 +27,15 @@ void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
     info.DecreaseControlledMediaNum();
   } else if (aState == MediaPlaybackState::ePlayed) {
     info.IncreasePlayingMediaNum();
+    if (aIsVideo) {
+      info.IncreasePlayingVideoMediaNum();
+    }
   } else {
     MOZ_ASSERT(aState == MediaPlaybackState::ePaused);
     info.DecreasePlayingMediaNum();
+    if (aIsVideo) {
+      info.DecreasePlayingVideoMediaNum();
+    }
   }
 
   // The context still has controlled media, we should keep its alive.
@@ -36,6 +43,7 @@ void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
     return;
   }
   MOZ_ASSERT(!info.IsPlaying());
+  MOZ_ASSERT(!info.IsAnyVideoMediaPlaying());
   MOZ_ASSERT(!info.IsAudible());
   // DO NOT access `info` after this line.
   DestroyContextInfo(aContextId);
@@ -107,6 +115,15 @@ bool MediaPlaybackStatus::IsAnyMediaBeingControlled() const {
   return std::any_of(
       mContextInfoMap.Values().cbegin(), mContextInfoMap.Values().cend(),
       [](const auto& info) { return info->IsAnyMediaBeingControlled(); });
+}
+
+bool MediaPlaybackStatus::IsAnyVideoMediaPlaying() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  return std::any_of(mContextInfoMap.Values().cbegin(),
+                     mContextInfoMap.Values().cend(),
+                     [](const auto& info) {
+                       return info->IsAnyVideoMediaPlaying();
+                     });
 }
 
 Maybe<PositionState> MediaPlaybackStatus::GuessedMediaPositionState(

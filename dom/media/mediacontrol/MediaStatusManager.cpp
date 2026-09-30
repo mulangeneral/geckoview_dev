@@ -313,11 +313,13 @@ MediaSessionPlaybackState MediaStatusManager::GetCurrentDeclaredPlaybackState()
 }
 
 void MediaStatusManager::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                                    MediaPlaybackState aState) {
-  LOG("UpdateMediaPlaybackState %s for context %" PRIu64,
-      EnumValueToString(aState), aBrowsingContextId);
+                                                    MediaPlaybackState aState,
+                                                    bool aIsVideo) {
+  LOG("UpdateMediaPlaybackState %s (isVideo=%d) for context %" PRIu64,
+      EnumValueToString(aState), aIsVideo, aBrowsingContextId);
   const bool oldPlaying = mPlaybackStatusDelegate.IsPlaying();
-  mPlaybackStatusDelegate.UpdateMediaPlaybackState(aBrowsingContextId, aState);
+  mPlaybackStatusDelegate.UpdateMediaPlaybackState(aBrowsingContextId, aState,
+                                                   aIsVideo);
 
   // Playback state doesn't change, we don't need to update the guessed playback
   // state. This is used to prevent the state from changing from `none` to
@@ -531,6 +533,10 @@ bool MediaStatusManager::IsMediaPlaying() const {
 
 bool MediaStatusManager::IsAnyMediaBeingControlled() const {
   return mPlaybackStatusDelegate.IsAnyMediaBeingControlled();
+}
+
+bool MediaStatusManager::IsAnyVideoMediaPlaying() const {
+  return mPlaybackStatusDelegate.IsAnyVideoMediaPlaying();
 }
 
 void MediaStatusManager::NotifyPageTitleChanged() {
