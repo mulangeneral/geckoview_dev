@@ -2442,6 +2442,7 @@ STATIC_ATOMS = [
     Atom("onplaybackstatechange", "onplaybackstatechange"),
     Atom("onpositionstatechange", "onpositionstatechange"),
     Atom("onsupportedkeyschange", "onsupportedkeyschange"),
+    Atom("onvideomediachange", "onvideomediachange"),
     # Media query prefs for UA sheets.
     Atom("mathml_legacy_mathvariant_attribute_disabled", "mathml.legacy_mathvariant_attribute.disabled"),
     Atom("layout_css_always_underline_links", "layout.css.always_underline_links"),
