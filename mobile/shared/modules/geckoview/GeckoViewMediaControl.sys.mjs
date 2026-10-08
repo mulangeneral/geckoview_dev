@@ -233,21 +233,18 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       return;
     }
 
-    // ★ 纯音频在播不下发 Playing：onPlay 仅代表视频（行车抑制判定依据）；
-    // hasVideoMedia 为"播放中视频数>0"，与可听性无关，静音/零音量视频照常计数；
-    // Paused/None 照常下发，保证焦点释放与会话状态同步
-    if (type === "GeckoView:MediaSession:Playback:Playing" &&
-        !this.controller.hasVideoMedia) {
-      return;
-    }
-
+    // ★ Playing 一律下发（含可听音频）：onPlay 代表媒体在播，app 端按 payload 的
+    // isVideo 区分音视频——行车抑制仅在 isVideo==true 时生效；静音/零音量音频
+    // 未注册媒体控制监听，不会走到这里；Paused/None 照常下发，保证焦点释放
+    // 与会话状态同步
     this.eventDispatcher.sendRequest({
       type,
       isVideo: this.controller.hasVideoMedia,
     });
   }
 
-  // 视频起播/停播而播放态未变时，按最新类型重发当前状态（音频在播时视频起播不漏 onPlay）
+  // 视频起播/停播而播放态未变时，按最新 isVideo 重发当前状态
+  // （app 端据 isVideo 变化重新做行车抑制门控）
   handleVideoMediaChanged() {
     debug`handleVideoMediaChanged ${this.controller.hasVideoMedia}`;
     this.handlePlaybackStateChanged();
