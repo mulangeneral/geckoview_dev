@@ -21,6 +21,11 @@ if [ ! -d carota/patches ]; then
   exit 1
 fi
 
+if git show-ref --verify --quiet "refs/heads/$SRC_BRANCH"; then
+  echo "错误：本地已存在分支 $SRC_BRANCH。若它已推送到 origin，直接使用即可；" >&2
+  echo "      确需重建请先执行：git branch -D $SRC_BRANCH" >&2
+  exit 1
+fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 cp -a carota "$WORK/carota"
