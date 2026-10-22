@@ -50,6 +50,18 @@
 
 ## 3. 准备源码分支（Linux）
 
+> **现状（已生成并推送）**：`geckoview-157-src` 分支已在 origin 上，
+> 导入树与上游 `46056a25…` 逐字节一致（根树 `4815090c0043a4cd6421ee6e3a1fda9c80154356`、
+> 480,474 个文件、1,834 个可执行位），并在其上叠了 1 个定制补丁提交 + 1 个脚本提交。
+> Linux 构建机**不需要再跑本脚本**，直接：
+>
+> ```bash
+> git fetch origin geckoview-157-src
+> git checkout geckoview-157-src
+> ```
+>
+> 脚本保留给以后升级内核版本（换 `BASE_REV`）时复用。
+
 ```bash
 git clone git@github.com:mulangeneral/geckoview_dev.git
 cd geckoview_dev
