@@ -8872,17 +8872,33 @@ void HTMLMediaElement::StartMediaControlKeyListenerIfNeeded() {
   if (!IsPlayable()) {
     return;
   }
-  // For controllable sources, delay starting until the media is audible (or in
-  // PiP/fullscreen) so we don't register silent media with the controller.
-  // ComputedVolume() catches the cases IsAudible() misses, e.g. the tab being
-  // silenced by an audio-channel volume factor of zero without an explicit
-  // mute.
-  if (IsControllableMediaSource() &&
-      (!IsAudible() || ComputedVolume() == 0.0f) &&
-      !IsBeingUsedInPictureInPictureMode() && !IsInFullScreen()) {
-    MEDIACONTROL_LOG("Delay starting: controllable source not yet audible");
+
+  // Carota customization (GeckoView 157): do not register real-time stream
+  // sources with the media controller, matching the 142 custom AAR.
+  if (mSrcStream) {
+    MEDIACONTROL_LOG("Not listening because media is real-time");
     return;
   }
+
+  // Carota customization (GeckoView 157): only video elements register with the
+  // media controller; audio-only elements never do. The embedder uses
+  // MediaSession.Delegate.onPlay as "a video started playing" for the
+  // driving-video restriction (MainActivity.MediaSessionDelegate.onPlay pauses
+  // on receipt). If audio-only media also reported Playing, music/podcasts
+  // would be mistaken for video and paused.
+  if (!IsVideo()) {
+    MEDIACONTROL_LOG("Not listening because it's an audio element");
+    return;
+  }
+
+  // Carota customization (GeckoView 157): video exempts the audibility check --
+  // muted / zero-volume / autoplay-muted <video> must register as well,
+  // otherwise onPlay never fires and the driving restriction misses them.
+  // Upstream delays the start while a controllable source is inaudible (and not
+  // in PiP/fullscreen), which is exactly what filters muted video out.
+  // Short clips are still filtered later by the ControlType::eUncontrollable
+  // branch of MediaControlKeyListener::Start(), equivalent to the duration
+  // threshold used by the 142 custom AAR.
   mMediaControlKeyListener->Start();
 }
 
