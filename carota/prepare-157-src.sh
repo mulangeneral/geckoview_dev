@@ -26,10 +26,19 @@ trap 'rm -rf "$WORK"' EXIT
 cp -a carota "$WORK/carota"
 
 echo "==> 1/4 拉取 Firefox 157.0b5 源码（$BASE_REV，整棵树约 500MB）"
-git fetch --depth 1 --no-tags "$MOZ_URL" "$BASE_REV"
+if ! git fetch --depth 1 --no-tags "$MOZ_URL" "$BASE_REV"; then
+  echo "    按 SHA 拉取失败，回退到标签 FIREFOX_157_0b5_BUILD1"
+  git fetch --depth 1 --no-tags "$MOZ_URL" refs/tags/FIREFOX_157_0b5_BUILD1
+fi
+SRC_VERSION="$(git show FETCH_HEAD:browser/config/version.txt | tr -d '[:space:]')"
+if [ "$SRC_VERSION" != "157.0" ]; then
+  echo "错误：拉到的源码版本是 '$SRC_VERSION'，期望 157.0" >&2
+  exit 1
+fi
+echo "    源码版本 OK: $SRC_VERSION（$(git show FETCH_HEAD:browser/config/version_display.txt)）"
 
 echo "==> 2/4 新建分支 $SRC_BRANCH，并把工作区整棵替换为 157 源码"
-git switch -c "$SRC_BRANCH"
+git switch -C "$SRC_BRANCH"
 git read-tree --reset -u FETCH_HEAD
 git commit -q -m "Import Firefox 157.0b5 GeckoView source
 
@@ -52,8 +61,9 @@ dom/media/mediaelement/HTMLMediaElement.cpp
 - 视频豁免上游的可听性延迟检查：静音/零音量/autoplay-muted 视频同样触发 onPlay"
 
 echo "==> 4/4 把 carota/ 构建脚本带回源码分支"
+rm -rf "$REPO_ROOT/carota"
 cp -a "$WORK/carota" "$REPO_ROOT/carota"
-git add carota
+git add -f carota
 git commit -q -m "添加 Carota 构建脚本与说明"
 
 git --no-pager log --oneline -4
