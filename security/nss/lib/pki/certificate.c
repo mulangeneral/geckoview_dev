@@ -39,7 +39,6 @@ nssCertificate_Create(
     NSSCertificate *rvCert;
     nssArenaMark *mark;
     NSSArena *arena = object->arena;
-    PR_ASSERT(object->instances != NULL && object->numInstances > 0);
     PR_ASSERT(object->lockType == nssPKIMonitor);
     mark = nssArena_Mark(arena);
     rvCert = nss_ZNEW(arena, NSSCertificate);
@@ -48,6 +47,8 @@ nssCertificate_Create(
     }
     rvCert->object = *object;
     /* XXX should choose instance based on some criteria */
+    nssPKIObject_Lock(object);
+    PR_ASSERT(object->instances != NULL && object->numInstances > 0);
     status = nssCryptokiCertificate_GetAttributes(object->instances[0],
                                                   NULL, /* XXX sessionOpt */
                                                   arena,
@@ -57,6 +58,7 @@ nssCertificate_Create(
                                                   &rvCert->issuer,
                                                   &rvCert->serial,
                                                   &rvCert->subject);
+    nssPKIObject_Unlock(object);
     if (status != PR_SUCCESS ||
         !rvCert->encoding.data ||
         !rvCert->encoding.size ||
@@ -90,48 +92,78 @@ nssCertificate_Destroy(
     nssCertificateStoreTrace lockTrace = { NULL, NULL, PR_FALSE, PR_FALSE };
     nssCertificateStoreTrace unlockTrace = { NULL, NULL, PR_FALSE, PR_FALSE };
 
-    if (c) {
-        PRUint32 i;
-        nssDecodedCert *dc = c->decoding;
-        NSSTrustDomain *td = STAN_GetDefaultTrustDomain();
-        NSSCryptoContext *cc = c->object.cryptoContext;
+    if (!c) {
+        return PR_SUCCESS;
+    }
 
-        PR_ASSERT(c->object.refCount > 0);
-
-        /* --- LOCK storage --- */
-        if (cc) {
-            nssCertificateStore_Lock(cc->certStore, &lockTrace);
-        } else {
-            nssTrustDomain_LockCertCache(td);
-        }
-        if (PR_ATOMIC_DECREMENT(&c->object.refCount) == 0) {
-            /* --- remove cert and UNLOCK storage --- */
-            if (cc) {
-                nssCertificateStore_RemoveCertLOCKED(cc->certStore, c);
-                nssCertificateStore_Unlock(cc->certStore, &lockTrace,
-                                           &unlockTrace);
-            } else {
-                nssTrustDomain_RemoveCertFromCacheLOCKED(td, c);
-                nssTrustDomain_UnlockCertCache(td);
-            }
-            /* free cert data */
-            for (i = 0; i < c->object.numInstances; i++) {
-                nssCryptokiObject_Destroy(c->object.instances[i]);
-            }
-            nssPKIObject_DestroyLock(&c->object);
-            nssArena_Destroy(c->object.arena);
-            nssDecodedCert_Destroy(dc);
-        } else {
-            /* --- UNLOCK storage --- */
-            if (cc) {
-                nssCertificateStore_Unlock(cc->certStore,
-                                           &lockTrace,
-                                           &unlockTrace);
-            } else {
-                nssTrustDomain_UnlockCertCache(td);
-            }
+    // Determine which lock to hold while decrementing the refcount.
+    nssPKIObject_Lock(&c->object);
+    NSSCryptoContext *cc = c->object.cryptoContext;
+    nssPKIObject_Unlock(&c->object);
+    // If the certificate had a cryptoContext set, it may be in the certificate
+    // store.
+    if (cc) {
+        // The certificate store lock must be taken before the object lock.
+        nssCertificateStore_Lock(cc->certStore, &lockTrace);
+        nssPKIObject_Lock(&c->object);
+        // Lost the race with moving the certificate from the certificate store
+        // to the trust domain (see __CERT_AddTempCertToPerm and
+        // PK11_ImportCert).
+        if (c->object.cryptoContext != cc) {
+            nssPKIObject_Unlock(&c->object);
+            nssCertificateStore_Unlock(cc->certStore, &lockTrace,
+                                       &unlockTrace);
+            cc = NULL;
         }
     }
+
+    // If the certificate did not have a cryptoContext set (or we lost the
+    // race), it is in the trust domain.
+    NSSTrustDomain *td = STAN_GetDefaultTrustDomain();
+    if (!cc) {
+        nssTrustDomain_LockCertCache(td);
+        nssPKIObject_Lock(&c->object);
+    }
+
+    // At this point, we are holding the appropriate lock for where the
+    // certificate is stored (certificate store or trust domain) as well as the
+    // lock for the pki object backing the certificate. For some reason this is
+    // necessary even though the refcounting is atomic. Go figure.
+
+    // Return early if this isn't the last reference.
+    if (PR_ATOMIC_DECREMENT(&c->object.refCount) != 0) {
+        nssPKIObject_Unlock(&c->object);
+        if (cc) {
+            nssCertificateStore_Unlock(cc->certStore, &lockTrace, &unlockTrace);
+        } else {
+            nssTrustDomain_UnlockCertCache(td);
+        }
+        return PR_SUCCESS;
+    }
+
+    // Remove the certificate from the appropriate location.
+    if (cc) {
+        nssCertificateStore_RemoveCertLOCKED(cc->certStore, c);
+    } else {
+        nssTrustDomain_RemoveCertFromCacheLOCKED(td, c);
+    }
+
+    // Release the appropriate locks.
+    nssPKIObject_Unlock(&c->object);
+    if (cc) {
+        nssCertificateStore_Unlock(cc->certStore, &lockTrace, &unlockTrace);
+    } else {
+        nssTrustDomain_UnlockCertCache(td);
+    }
+
+    // Free the resources associated with the certificate.
+    for (PRUint32 i = 0; i < c->object.numInstances; i++) {
+        nssCryptokiObject_Destroy(c->object.instances[i]);
+    }
+    nssPKIObject_DestroyLock(&c->object);
+    nssDecodedCert_Destroy(c->decoding);
+    nssArena_Destroy(c->object.arena);
+
     return PR_SUCCESS;
 }
 
@@ -910,6 +942,33 @@ nssTrust_IsSafeToIgnoreCertHash(nssTrustLevel serverAuth,
     return PR_TRUE;
 }
 
+/* verify that hash and mechanism matches certifcate. This function
+ * uses hashCache and hashCacheMech from the caller to allow us to
+ * use previous calculated hash values if they are the same */
+static PRBool
+nssTrust_isValidHash(const NSSItem *hash, CK_MECHANISM_TYPE hashMech,
+                     NSSItem *cert, NSSItem *hashCache,
+                     CK_MECHANISM_TYPE *hashCacheMech)
+{
+    if ((hashMech == CKM_INVALID_MECHANISM) || (hash->size == 0)) {
+        return PR_FALSE;
+    }
+    if (*hashCacheMech != hashMech) {
+        /* the cache doesn't have the correct mech, get a
+         * new hash for the cert */
+        hashCache->size = HASH_LENGTH_MAX;
+        PRStatus ret = NSSAlgorithm_DigestBuf(hashMech, cert, hashCache);
+        if (ret != PR_SUCCESS) {
+            *hashCacheMech = CKM_INVALID_MECHANISM;
+            return PR_FALSE;
+        }
+        *hashCacheMech = hashMech;
+    }
+    return ((hash->size == hashCache->size) && (PORT_Memcmp(hash->data,
+                                                            hashCache->data,
+                                                            hash->size) == 0));
+}
+
 NSS_IMPLEMENT NSSTrust *
 nssTrust_Create(
     nssPKIObject *object,
@@ -918,13 +977,15 @@ nssTrust_Create(
     PRStatus status;
     PRUint32 i;
     PRUint32 lastTrustOrder, myTrustOrder;
-    unsigned char sha1_hashcmp[SHA1_LENGTH];
-    unsigned char sha1_hashin[SHA1_LENGTH];
-    NSSItem sha1_hash;
+    unsigned char hashCacheBuf[HASH_LENGTH_MAX];
+    unsigned char hashAttrBuf[HASH_LENGTH_MAX];
+    NSSItem hashAttr = { hashAttrBuf, sizeof(hashAttrBuf) };
+    NSSItem hashCache = { hashCacheBuf, sizeof(hashCacheBuf) };
     NSSTrust *rvt;
+    CK_MECHANISM_TYPE hashMech = CKM_INVALID_MECHANISM;
+    CK_MECHANISM_TYPE hashCacheMech = CKM_INVALID_MECHANISM;
     nssCryptokiObject *instance;
     nssTrustLevel serverAuth, clientAuth, codeSigning, emailProtection;
-    SECStatus rv; /* Should be stan flavor */
     PRBool stepUp;
 
     lastTrustOrder = 1 << 16; /* just make it big */
@@ -935,20 +996,15 @@ nssTrust_Create(
     }
     rvt->object = *object;
 
-    /* should be stan flavor of Hashbuf */
-    rv = PK11_HashBuf(SEC_OID_SHA1, sha1_hashcmp, certData->data, certData->size);
-    if (rv != SECSuccess) {
-        return (NSSTrust *)NULL;
-    }
-    sha1_hash.data = sha1_hashin;
-    sha1_hash.size = sizeof(sha1_hashin);
     /* trust has to peek into the base object members */
     nssPKIObject_Lock(object);
     for (i = 0; i < object->numInstances; i++) {
+        hashAttr.size = sizeof(hashAttrBuf); /* reset to allocated size */
         instance = object->instances[i];
         myTrustOrder = nssToken_GetTrustOrder(instance->token);
         status = nssCryptokiTrust_GetAttributes(instance, NULL,
-                                                &sha1_hash,
+                                                &hashAttr,
+                                                &hashMech,
                                                 &serverAuth,
                                                 &clientAuth,
                                                 &codeSigning,
@@ -964,14 +1020,14 @@ nssTrust_Create(
         if (!(
                 /* we continue if there is no hash, and the trust type is
                  * safe to accept without a hash ... or ... */
-                ((sha1_hash.size == 0) &&
+                (((hashAttr.size == 0) || (hashMech == CKM_INVALID_MECHANISM)) &&
                  nssTrust_IsSafeToIgnoreCertHash(serverAuth, clientAuth,
                                                  codeSigning, emailProtection,
                                                  stepUp)) ||
                 /* we have a hash of the correct size, and it matches */
-                ((sha1_hash.size == SHA1_LENGTH) && (PORT_Memcmp(sha1_hashin,
-                                                                 sha1_hashcmp,
-                                                                 SHA1_LENGTH) == 0)))) {
+                nssTrust_isValidHash(&hashAttr, hashMech, certData,
+                                     &hashCache, &hashCacheMech))) {
+
             nssPKIObject_Unlock(object);
             return (NSSTrust *)NULL;
         }
@@ -1040,13 +1096,14 @@ nssCRL_Create(nssPKIObject *object)
     PRStatus status;
     NSSCRL *rvCRL;
     NSSArena *arena = object->arena;
-    PR_ASSERT(object->instances != NULL && object->numInstances > 0);
     rvCRL = nss_ZNEW(arena, NSSCRL);
     if (!rvCRL) {
         return (NSSCRL *)NULL;
     }
     rvCRL->object = *object;
     /* XXX should choose instance based on some criteria */
+    nssPKIObject_Lock(object);
+    PR_ASSERT(object->instances != NULL && object->numInstances > 0);
     status = nssCryptokiCRL_GetAttributes(object->instances[0],
                                           NULL, /* XXX sessionOpt */
                                           arena,
@@ -1055,6 +1112,7 @@ nssCRL_Create(nssPKIObject *object)
                                           NULL, /* class */
                                           &rvCRL->url,
                                           &rvCRL->isKRL);
+    nssPKIObject_Unlock(object);
     if (status != PR_SUCCESS) {
         if (!arena) {
             nssPKIObject_Destroy((nssPKIObject *)rvCRL);

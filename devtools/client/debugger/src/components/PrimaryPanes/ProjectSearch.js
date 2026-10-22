@@ -19,10 +19,11 @@ import { getRelativePath } from "../../utils/sources-tree/utils";
 import {
   getProjectSearchQuery,
   getNavigateCounter,
+  getSearchOptions,
 } from "../../selectors/index";
 
-import SearchInput from "../shared/SearchInput";
-import AccessibleImage from "../shared/AccessibleImage";
+import DebuggerImage from "devtools/client/shared/components/DebuggerImage";
+import SearchInput from "devtools/client/shared/components/SearchInput";
 
 const { PluralForm } = require("resource://devtools/shared/plural-form.js");
 const classnames = require("resource://devtools/client/shared/classnames.js");
@@ -59,7 +60,6 @@ export class ProjectSearch extends Component {
       // or when restoring primary panes from collapse.
       query: this.props.query || "",
 
-      inputFocused: false,
       focusedItem: null,
       expanded: new Set(),
       results: [],
@@ -79,6 +79,9 @@ export class ProjectSearch extends Component {
       query: PropTypes.string.isRequired,
       searchSources: PropTypes.func.isRequired,
       selectSpecificLocationOrSameUrl: PropTypes.func.isRequired,
+      searchOptions: PropTypes.object.isRequired,
+      setSearchOptions: PropTypes.func.isRequired,
+      navigateCounter: PropTypes.number,
     };
   }
 
@@ -235,13 +238,14 @@ export class ProjectSearch extends Component {
         }),
         key: file.location.source.id,
       },
-      React.createElement(AccessibleImage, {
-        className: classnames("arrow", {
+      React.createElement(DebuggerImage, {
+        name: "arrow",
+        className: classnames({
           expanded,
         }),
       }),
-      React.createElement(AccessibleImage, {
-        className: "file",
+      React.createElement(DebuggerImage, {
+        name: "file",
       }),
       span(
         {
@@ -308,8 +312,8 @@ export class ProjectSearch extends Component {
           : L10N.getStr("projectTextSearch.refreshButtonTooltip"),
         onClick: this.doSearch,
       },
-      React.createElement(AccessibleImage, {
-        className: "refresh",
+      React.createElement(DebuggerImage, {
+        name: "refresh",
       })
     );
   }
@@ -402,28 +406,24 @@ export class ProjectSearch extends Component {
       showErrorEmoji: this.shouldShowErrorEmoji(),
       isLoading: status === statusType.fetching,
       onChange: this.inputOnChange,
-      onFocus: () =>
-        this.setState({
-          inputFocused: true,
-        }),
-      onBlur: () =>
-        this.setState({
-          inputFocused: false,
-        }),
       onKeyDown: this.onKeyDown,
       onHistoryScroll: this.onHistoryScroll,
       showClose: false,
       showExcludePatterns: true,
+      showSearchModifiers: true,
       excludePatternsLabel: L10N.getStr(
         "projectTextSearch.excludePatterns.label"
       ),
       excludePatternsPlaceholder: L10N.getStr(
         "projectTextSearch.excludePatterns.placeholder"
       ),
-      ref: "searchInput",
-      showSearchModifiers: true,
       searchKey: searchKeys.PROJECT_SEARCH,
       onToggleSearchModifier: this.doSearch,
+      searchOptions: this.props.searchOptions,
+      setSearchOptions: this.props.setSearchOptions,
+      expanded: false,
+      hasPrefix: false,
+      DebuggerImage,
     });
   }
 
@@ -456,10 +456,12 @@ ProjectSearch.contextTypes = {
 const mapStateToProps = state => ({
   query: getProjectSearchQuery(state),
   navigateCounter: getNavigateCounter(state),
+  searchOptions: getSearchOptions(state, searchKeys.PROJECT_SEARCH),
 });
 
 export default connect(mapStateToProps, {
   searchSources: actions.searchSources,
   selectSpecificLocationOrSameUrl: actions.selectSpecificLocationOrSameUrl,
   doSearchForHighlight: actions.doSearchForHighlight,
+  setSearchOptions: actions.setSearchOptions,
 })(ProjectSearch);

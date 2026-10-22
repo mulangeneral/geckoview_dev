@@ -5,11 +5,11 @@
 //! Write colors into CSS strings.
 
 use super::{
-    parsing::{NumberOrAngleComponent, NumberOrPercentageComponent},
     AbsoluteColor, ColorFlags, ColorSpace,
+    parsing::{NumberOrAngleComponent, NumberOrPercentageComponent},
 };
 use crate::values::normalize;
-use cssparser::color::{clamp_unit_f32, serialize_color_alpha, OPAQUE};
+use cssparser::color::{OPAQUE, clamp_unit_f32, serialize_color_alpha};
 use std::fmt::{self, Write};
 use style_traits::{CssWriter, ToCss};
 
@@ -126,16 +126,22 @@ impl ToCss for AbsoluteColor {
                             "legacy srgb is not a color function"
                         );
                     },
-                    ColorSpace::SrgbLinear |
-                    ColorSpace::DisplayP3 |
-                    ColorSpace::A98Rgb |
-                    ColorSpace::ProphotoRgb |
-                    ColorSpace::Rec2020 |
-                    ColorSpace::XyzD50 |
-                    ColorSpace::XyzD65 => {
+                    ColorSpace::SrgbLinear
+                    | ColorSpace::DisplayP3
+                    | ColorSpace::DisplayP3Linear
+                    | ColorSpace::A98Rgb
+                    | ColorSpace::ProphotoRgb
+                    | ColorSpace::Rec2020
+                    | ColorSpace::XyzD50
+                    | ColorSpace::XyzD65 => {
                         // These color spaces are allowed.
                     },
-                    _ => {
+                    ColorSpace::Hsl
+                    | ColorSpace::Hwb
+                    | ColorSpace::Lab
+                    | ColorSpace::Oklab
+                    | ColorSpace::Lch
+                    | ColorSpace::Oklch => {
                         unreachable!("other color spaces do not support color() syntax")
                     },
                 };
@@ -168,9 +174,7 @@ impl AbsoluteColor {
         W: Write,
     {
         macro_rules! precision {
-            ($v:expr) => {{
-                ($v * 100.0).round() / 100.0
-            }};
+            ($v:expr) => {{ ($v * 100.0).round() / 100.0 }};
         }
         macro_rules! number {
             ($c:expr) => {{
@@ -267,13 +271,14 @@ impl AbsoluteColor {
                 serialize_color_alpha(dest, self.alpha(), false)?;
                 dest.write_char(')')
             },
-            ColorSpace::SrgbLinear |
-            ColorSpace::DisplayP3 |
-            ColorSpace::A98Rgb |
-            ColorSpace::ProphotoRgb |
-            ColorSpace::Rec2020 |
-            ColorSpace::XyzD50 |
-            ColorSpace::XyzD65 => {
+            ColorSpace::SrgbLinear
+            | ColorSpace::DisplayP3
+            | ColorSpace::DisplayP3Linear
+            | ColorSpace::A98Rgb
+            | ColorSpace::ProphotoRgb
+            | ColorSpace::Rec2020
+            | ColorSpace::XyzD50
+            | ColorSpace::XyzD65 => {
                 dest.write_str("color(")?;
                 self.color_space.to_css(dest)?;
                 dest.write_char(' ')?;

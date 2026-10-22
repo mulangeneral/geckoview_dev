@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -15,11 +13,11 @@
 
 #include "mozilla/Maybe.h"
 #include "mozilla/dom/BindingDeclarations.h"
-#include "nsIFrame.h"  // for WeakFrame only
-#include "nsIStreamListener.h"
-#include "nsIChannelEventSink.h"
-#include "nsIObjectLoadingContent.h"
 #include "nsFrameLoaderOwner.h"
+#include "nsIChannelEventSink.h"
+#include "nsIFrame.h"  // for WeakFrame only
+#include "nsIObjectLoadingContent.h"
+#include "nsIStreamListener.h"
 
 class nsStopPluginRunnable;
 class nsIPrincipal;
@@ -297,11 +295,6 @@ class nsObjectLoadingContent : public nsIStreamListener,
   nsresult CloseChannel();
 
   /**
-   * If this object should be tested against blocking list.
-   */
-  bool ShouldBlockContent();
-
-  /**
    * This method tells the final answer on whether this object's fallback
    * content should be used instead of the original plugin content.
    *
@@ -452,9 +445,6 @@ class nsObjectLoadingContent : public nsIStreamListener,
   // created using NS_FROM_PARSER_NETWORK flag. If the element is modified,
   // it may lose the flag.
   bool mNetworkCreated : 1;
-
-  // Whether content blocking is enabled or not for this object.
-  bool mContentBlockingEnabled : 1;
 
   // Protects DoStopPlugin from reentry (bug 724781).
   bool mIsStopping : 1;

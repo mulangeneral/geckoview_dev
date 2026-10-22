@@ -1,22 +1,24 @@
-/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "txNodeSorter.h"
-#include "txExecutionState.h"
-#include "txXPathResultComparator.h"
-#include "nsGkAtoms.h"
-#include "txNodeSetContext.h"
-#include "txExpr.h"
-#include "txStringUtils.h"
 
 #include "mozilla/CheckedInt.h"
 #include "mozilla/UniquePtrExtensions.h"
+#include "nsGkAtoms.h"
+#include "nsRFPService.h"
+#include "txExecutionState.h"
+#include "txExpr.h"
+#include "txNodeSetContext.h"
+#include "txStringUtils.h"
+#include "txXPathResultComparator.h"
 
 using mozilla::CheckedUint32;
 using mozilla::MakeUnique;
 using mozilla::MakeUniqueFallible;
+using mozilla::nsRFPService;
+using mozilla::RFPTarget;
 using mozilla::UniquePtr;
 
 /*
@@ -70,9 +72,10 @@ nsresult txNodeSorter::addSortElement(Expr* aSelectExpr, Expr* aLangExpr,
     // Text comparator
 
     // Language
-    nsAutoString lang;
+    nsAutoCStringN<6> lang;
     if (aLangExpr) {
-      rv = aLangExpr->evaluateToString(aContext, lang);
+      nsAutoStringN<6> utf16lang;
+      rv = aLangExpr->evaluateToString(aContext, utf16lang);
       NS_ENSURE_SUCCESS(rv, rv);
     }
 
@@ -94,7 +97,9 @@ nsresult txNodeSorter::addSortElement(Expr* aSelectExpr, Expr* aLangExpr,
 
     UniquePtr<txResultStringComparator> comparator =
         MakeUnique<txResultStringComparator>(ascending, upperFirst);
-    rv = comparator->init(lang);
+    rv = comparator->init(
+        lang, aContext->getContextNode().OwnerDoc()->ShouldResistFingerprinting(
+                  RFPTarget::JSLocale));
     NS_ENSURE_SUCCESS(rv, rv);
 
     key->mComparator = comparator.release();

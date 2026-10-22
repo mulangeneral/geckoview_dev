@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -8,12 +6,14 @@
 #define DOM_NOTIFICATION_NOTIFICATIONUTILS_H_
 
 #include <cstdint>
+
 #include "mozilla/dom/DOMTypes.h"
 #include "nsCOMPtr.h"
 #include "nsINotificationStorage.h"
 #include "nsStringFwd.h"
 
 enum class nsresult : uint32_t;
+class nsIAlertCallbacks;
 class nsIAlertNotification;
 class nsIPrincipal;
 class nsINotificationStorage;
@@ -38,6 +38,7 @@ enum class PermissionCheckPurpose : uint8_t {
   PermissionRequest,
   PermissionAttribute,
   NotificationShow,
+  LoadImageForShow,
 };
 
 /**
@@ -69,6 +70,12 @@ NotificationPermission GetNotificationPermission(
 
 nsCOMPtr<nsINotificationStorage> GetNotificationStorage(bool isPrivate);
 
+using NotificationsPromise =
+    MozPromise<CopyableTArray<IPCNotification>, nsresult, false>;
+
+already_AddRefed<NotificationsPromise> GetStoredNotificationsForScope(
+    nsIPrincipal* aPrincipal, const nsACString& aScope, const nsAString& aTag);
+
 nsresult GetOrigin(nsIPrincipal* aPrincipal, nsString& aOrigin);
 
 nsresult PersistNotification(nsIPrincipal* aPrincipal,
@@ -89,7 +96,7 @@ void UnregisterNotification(nsIPrincipal* aPrincipal, const nsString& aId);
 // The cleanup happens when this is globally the first call, or always if
 // dom.webnotifications.testing.force_storage_cleanup.enabled is set.
 nsresult ShowAlertWithCleanup(nsIAlertNotification* aAlert,
-                              nsIObserver* aAlertListener);
+                              nsIAlertCallbacks* aAlertCallbacks);
 
 nsresult RemovePermission(nsIPrincipal* aPrincipal);
 nsresult OpenSettings(nsIPrincipal* aPrincipal);

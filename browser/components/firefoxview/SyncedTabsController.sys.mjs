@@ -112,12 +112,12 @@ export class SyncedTabsController {
         }
         case `${ErrorType.SIGNED_OUT}`:
         case "sign-in": {
-          TabsSetupFlowManager.openFxASignup(event.target.ownerGlobal);
+          TabsSetupFlowManager.openFxASignup(event.target.documentGlobal);
           this.signupCallback?.();
           break;
         }
         case "add-device": {
-          TabsSetupFlowManager.openFxAPairDevice(event.target.ownerGlobal);
+          TabsSetupFlowManager.openFxAPairDevice(event.target.documentGlobal);
           this.pairDeviceCallback?.();
           break;
         }
@@ -126,9 +126,9 @@ export class SyncedTabsController {
           break;
         }
         case `${ErrorType.SYNC_DISCONNECTED}`: {
-          const win = event.target.ownerGlobal;
+          const win = event.target.documentGlobal;
           const { switchToTabHavingURI } =
-            win.docShell.chromeEventHandler.ownerGlobal;
+            win.docShell.chromeEventHandler.documentGlobal;
           switchToTabHavingURI(
             "about:preferences?action=choose-what-to-sync#sync",
             true,
@@ -138,10 +138,11 @@ export class SyncedTabsController {
         }
       }
     } else if (event.type == "click" && event.composedTarget.href) {
+      event.preventDefault();
       const { switchToTabHavingURI } =
         event.view.browsingContext.topChromeWindow;
       switchToTabHavingURI(event.composedTarget.href, true, {
-        ignoreFragment: true,
+        ignoreFragment: "whenComparingAndReplace",
       });
     }
   }
@@ -173,6 +174,25 @@ export class SyncedTabsController {
     this.host.requestUpdate();
   }
 
+  /**
+   * @typedef {object} ActionMapping
+   * @property {string} [asset]
+   *   URL for an illustration to accompany the action card
+   * @property {string} header
+   *   Fluent ID for header string
+   * @property {string} description
+   *   Fluent ID for description string
+   * @property {string} [buttonLabel]
+   *   Fluent ID for button string (if this state has a button)
+   * @property {{name: string, url: string}} [descriptionLink]
+   *   Additional localization properties for the `description` string if it
+   *   has an inline link; `name` should match the `data-l10n-name` of the
+   *   <a> tag and `url` will be used as the href of the <a> tag.
+   */
+
+  /** @typedef {"sign-in"|"add-device"|"sync-tabs-disabled"|"loading"} Action */
+
+  /** @type {{[A in Action]: ActionMapping}} */
   actionMappings = {
     "sign-in": {
       header: "firefoxview-syncedtabs-signin-header-2",
@@ -199,8 +219,39 @@ export class SyncedTabsController {
     },
   };
 
+  /** @type {{[A in Action]: ActionMapping}} */
+  novaActionMappings = {
+    "sign-in": {
+      asset: "chrome://browser/skin/sidebar/kit-tabs-devices.svg",
+      header: "firefoxview-syncedtabs-signin-header-3",
+      description: "firefoxview-syncedtabs-signin-description-3",
+      buttonLabel: "firefoxview-syncedtabs-signin-primarybutton-2",
+    },
+    "add-device": {
+      asset: "chrome://browser/skin/sidebar/kit-qr-tabs-devices-empty.svg",
+      header: "firefoxview-syncedtabs-adddevice-header-3",
+      description: "firefoxview-syncedtabs-adddevice-description-3",
+      descriptionLink: {
+        name: "url",
+        url: "https://support.mozilla.org/kb/how-do-i-set-sync-my-computer#w_connect-additional-devices-to-sync",
+      },
+    },
+    "sync-tabs-disabled": {
+      asset: "chrome://browser/skin/sidebar/kit-tabs-devices.svg",
+      header: "firefoxview-syncedtabs-synctabs-header-2",
+      description: "firefoxview-syncedtabs-synctabs-description-2",
+      buttonLabel: "firefoxview-tabpickup-synctabs-primarybutton-2",
+    },
+    loading: {
+      asset: "chrome://browser/skin/sidebar/kit-tabs-devices.svg",
+      header: "firefoxview-syncedtabs-loading-header-2",
+      description: "firefoxview-syncedtabs-loading-description-2",
+    },
+  };
+
   #getMessageCardForState({ error = false, action, errorState }) {
     errorState = errorState || this.errorState;
+    const nova = Services.prefs.getBoolPref("browser.nova.enabled", false);
     let header, description, descriptionLink, buttonLabel, mainImageUrl;
     let descriptionArray;
     if (error) {
@@ -208,24 +259,27 @@ export class SyncedTabsController {
       ({ header, description, link, buttonLabel } =
         SyncedTabsErrorHandler.getFluentStringsForErrorType(errorState));
       action = `${errorState}`;
-      mainImageUrl =
-        "chrome://browser/content/firefoxview/synced-tabs-error.svg";
+      mainImageUrl = nova
+        ? "chrome://browser/skin/sidebar/kit-tabs-devices-error.svg"
+        : "chrome://browser/content/firefoxview/synced-tabs-error.svg";
       descriptionArray = [description];
-      if (errorState == "password-locked") {
+      if (errorState == "password-locked" && !nova) {
         descriptionLink = {};
         // This is ugly, but we need to special case this link so we can
-        // coexist with the old view.
+        // coexist with the old view. TODO remove with nova cleanup
         descriptionArray.push("firefoxview-syncedtab-password-locked-link");
         descriptionLink.name = "syncedtab-password-locked-link";
         descriptionLink.url = link.href;
       }
     } else {
-      header = this.actionMappings[action].header;
-      description = this.actionMappings[action].description;
-      buttonLabel = this.actionMappings[action].buttonLabel;
-      descriptionLink = this.actionMappings[action].descriptionLink;
-      mainImageUrl =
-        "chrome://browser/content/firefoxview/synced-tabs-empty.svg";
+      const mappings = nova ? this.novaActionMappings : this.actionMappings;
+      header = mappings[action].header;
+      description = mappings[action].description;
+      buttonLabel = mappings[action].buttonLabel;
+      descriptionLink = mappings[action].descriptionLink;
+      mainImageUrl = nova
+        ? mappings[action].asset
+        : "chrome://browser/content/firefoxview/synced-tabs-empty.svg";
       descriptionArray = [description];
     }
     return {

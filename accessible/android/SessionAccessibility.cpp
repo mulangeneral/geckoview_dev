@@ -1,37 +1,36 @@
-/* -*- Mode: c++; c-basic-offset: 2; tab-width: 20; indent-tabs-mode: nil; -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "SessionAccessibility.h"
-#include "LocalAccessible-inl.h"
-#include "AndroidUiThread.h"
-#include "AndroidBridge.h"
-#include "DocAccessibleParent.h"
-#include "IDSet.h"
-#include "nsThreadUtils.h"
+
 #include "AccAttributes.h"
 #include "AccessibilityEvent.h"
+#include "AndroidBridge.h"
+#include "AndroidUiThread.h"
+#include "DocAccessibleParent.h"
 #include "DocAccessibleWrap.h"
+#include "IDSet.h"
 #include "JavaBuiltins.h"
-#include "nsAccessibilityService.h"
-#include "nsAccUtils.h"
-#include "nsViewManager.h"
-
+#include "LocalAccessible-inl.h"
+#include "mozilla/MouseEvents.h"
 #include "mozilla/PresShell.h"
-#include "mozilla/dom/BrowserParent.h"
-#include "mozilla/dom/CanonicalBrowsingContext.h"
-#include "mozilla/dom/Document.h"
-#include "mozilla/dom/DocumentInlines.h"
 #include "mozilla/a11y/Accessible.h"
 #include "mozilla/a11y/DocAccessibleParent.h"
 #include "mozilla/a11y/DocManager.h"
 #include "mozilla/a11y/HyperTextAccessibleBase.h"
+#include "mozilla/dom/BrowserParent.h"
+#include "mozilla/dom/CanonicalBrowsingContext.h"
+#include "mozilla/dom/Document.h"
+#include "mozilla/dom/DocumentInlines.h"
+#include "mozilla/dom/MouseEventBinding.h"
+#include "mozilla/dom/WindowGlobalParent.h"
 #include "mozilla/jni/GeckoBundleUtils.h"
 #include "mozilla/jni/NativesInlines.h"
 #include "mozilla/widget/GeckoViewSupport.h"
-#include "mozilla/MouseEvents.h"
-#include "mozilla/dom/MouseEventBinding.h"
+#include "nsAccUtils.h"
+#include "nsAccessibilityService.h"
+#include "nsThreadUtils.h"
 
 #ifdef DEBUG
 #  include <android/log.h>
@@ -54,7 +53,8 @@ class Settings final
   static void ToggleNativeAccessibility(bool aEnable) {
     if (aEnable) {
       GetOrCreateAccService();
-    } else {
+    } else if (PlatformDisabledState() != ePlatformIsForceEnabled) {
+      // Accessibility isn't force enabled, so shut it down.
       MaybeShutdownAccService(nsAccessibilityService::ePlatformAPI);
     }
   }
@@ -149,6 +149,15 @@ void SessionAccessibility::Click(int32_t aID) {
   MonitorAutoLock mal(nsAccessibilityService::GetAndroidMonitor());
   if (Accessible* acc = GetAccessibleByID(aID)) {
     acc->DoAction(0);
+  }
+}
+
+void SessionAccessibility::ChangeValueBySteps(int32_t aID, double aSteps) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MonitorAutoLock mal(nsAccessibilityService::GetAndroidMonitor());
+  if (Accessible* acc = GetAccessibleByID(aID)) {
+    double newValue = acc->CurValue() + (acc->Step() * aSteps);
+    acc->SetCurValue(newValue);
   }
 }
 
@@ -356,15 +365,14 @@ RefPtr<SessionAccessibility> SessionAccessibility::GetInstanceFor(
       return GetInstanceFor(doc->GetPresShell());
     }
   } else {
-    dom::CanonicalBrowsingContext* cbc =
-        static_cast<dom::BrowserParent*>(
-            aAccessible->AsRemote()->Document()->Manager())
-            ->GetBrowsingContext()
-            ->Top();
+    dom::CanonicalBrowsingContext* cbc = aAccessible->AsRemote()
+                                             ->Document()
+                                             ->Manager()
+                                             ->GetBrowsingContext()
+                                             ->Top();
     dom::BrowserParent* bp = cbc->GetBrowserParent();
     if (!bp) {
-      bp = static_cast<dom::BrowserParent*>(
-          aAccessible->AsRemote()->Document()->Manager());
+      bp = aAccessible->AsRemote()->Document()->GetBrowserParent();
     }
     if (auto element = bp->GetOwnerElement()) {
       if (auto doc = element->OwnerDoc()) {
@@ -388,12 +396,7 @@ RefPtr<SessionAccessibility> SessionAccessibility::GetInstanceFor(
     return nullptr;
   }
 
-  nsViewManager* vm = aPresShell->GetViewManager();
-  if (!vm) {
-    return nullptr;
-  }
-
-  nsCOMPtr<nsIWidget> rootWidget = vm->GetRootWidget();
+  nsCOMPtr<nsIWidget> rootWidget = aPresShell->GetRootWidget();
   // `rootWidget` can be one of several types. Here we make sure it is an
   // android nsWindow.
   if (RefPtr<nsWindow> window = nsWindow::From(rootWidget)) {
@@ -630,6 +633,13 @@ void SessionAccessibility::SendAnnouncementEvent(Accessible* aAccessible,
       java::SessionAccessibility::CLASSNAME_WEBVIEW, eventInfo);
 }
 
+void SessionAccessibility::SendValueChangedEvent(Accessible* aAccessible) {
+  mSessionAccessibility->SendEvent(
+      java::sdk::AccessibilityEvent::TYPE_VIEW_SCROLLED,
+      AccessibleWrap::GetVirtualViewID(aAccessible),
+      AccessibleWrap::AndroidClass(aAccessible), nullptr);
+}
+
 void SessionAccessibility::PopulateNodeInfo(
     Accessible* aAccessible, mozilla::jni::Object::Param aNodeInfo) {
   nsAutoString name;
@@ -640,9 +650,10 @@ void SessionAccessibility::PopulateNodeInfo(
   aAccessible->DOMNodeID(nodeID);
   nsAutoString accDesc;
   aAccessible->Description(accDesc);
+  nsAutoString language;
+  aAccessible->Language(language);
   uint64_t state = aAccessible->State();
   LayoutDeviceIntRect bounds = aAccessible->Bounds();
-  uint8_t actionCount = aAccessible->ActionCount();
   int32_t virtualViewID = AccessibleWrap::GetVirtualViewID(aAccessible);
   Accessible* parent = virtualViewID != kNoID ? aAccessible->Parent() : nullptr;
   int32_t parentID = parent ? AccessibleWrap::GetVirtualViewID(parent) : 0;
@@ -653,12 +664,14 @@ void SessionAccessibility::PopulateNodeInfo(
     role = roles::TEXT;
   }
 
-  uint32_t flags = AccessibleWrap::GetFlags(role, state, actionCount);
+  uint32_t flags = AccessibleWrap::GetFlags(aAccessible);
+
   int32_t className = AccessibleWrap::AndroidClass(aAccessible);
 
   nsAutoString hint;
   nsAutoString text;
   nsAutoString description;
+  nsAutoString containerTitle;
   if (state & states::EDITABLE) {
     // An editable field's name is populated in the hint.
     hint.Assign(name);
@@ -666,6 +679,8 @@ void SessionAccessibility::PopulateNodeInfo(
   } else {
     if (role == roles::LINK || role == roles::HEADING) {
       description.Assign(name);
+    } else if (role == roles::GROUPING) {
+      containerTitle.Assign(name);
     } else if (role != roles::CELL || nameFlag != eNameFromSubtree) {
       // In most cases, use the name as the text. We discard the name completely
       // for a table cell where the name is computed from the subtree because
@@ -685,14 +700,31 @@ void SessionAccessibility::PopulateNodeInfo(
     hint.Append(accDesc);
   }
 
-  if ((state & states::REQUIRED) != 0) {
-    nsAutoString requiredString;
-    if (LocalizeString(u"stateRequired"_ns, requiredString)) {
+  if (mozilla::jni::GetAPIVersion() < 36) {
+    // Version 36 introduces isFieldRequired and partial checked states,
+    // but for older devices we add these states to the hint string.
+    AutoTArray<nsString, 1> stateStrings;
+    if ((state & states::REQUIRED) != 0) {
+      nsAutoString requiredString;
+      if (LocalizeString(u"stateRequired"_ns, requiredString)) {
+        stateStrings.AppendElement(requiredString);
+      }
+    }
+
+    if ((state & states::MIXED) != 0 && (state & states::CHECKABLE) != 0) {
+      // A checkable widget is in a "mixed" state.
+      nsAutoString partiallyCheckedString;
+      if (LocalizeString(u"statePartiallyChecked"_ns, partiallyCheckedString)) {
+        stateStrings.AppendElement(partiallyCheckedString);
+      }
+    }
+
+    if (!stateStrings.IsEmpty()) {
       if (!hint.IsEmpty()) {
         // If the hint is non-empty, concatenate with a comma for a brief pause.
         hint.AppendLiteral(", ");
       }
-      hint.Append(requiredString);
+      StringJoinAppend(hint, u" "_ns, stateStrings);
     }
   }
 
@@ -730,13 +762,20 @@ void SessionAccessibility::PopulateNodeInfo(
       className, jni::IntArray::New(boundsArray, 4), jni::StringParam(text),
       jni::StringParam(description), jni::StringParam(hint),
       jni::StringParam(geckoRole), jni::StringParam(roleDescription),
-      jni::StringParam(nodeID), inputType);
+      jni::StringParam(nodeID), jni::StringParam(containerTitle),
+      jni::StringParam(language), inputType);
 
   if (aAccessible->HasNumericValue()) {
     double curValue = aAccessible->CurValue();
     double minValue = aAccessible->MinValue();
     double maxValue = aAccessible->MaxValue();
     double step = aAccessible->Step();
+
+    // XXX: Currently, the only two accessibles that support SetCurValue are
+    // native ranges and spinners.
+    bool isSettable =
+        (aAccessible->IsHTMLSpinner() || aAccessible->IsHTMLRange()) &&
+        (state & (states::READONLY | states::UNAVAILABLE)) == 0;
 
     int32_t rangeType = 0;  // integer
     if (maxValue == 1 && minValue == 0) {
@@ -747,7 +786,7 @@ void SessionAccessibility::PopulateNodeInfo(
 
     mSessionAccessibility->PopulateNodeRangeInfo(
         aNodeInfo, rangeType, static_cast<float>(minValue),
-        static_cast<float>(maxValue), static_cast<float>(curValue));
+        static_cast<float>(maxValue), static_cast<float>(curValue), isSettable);
   }
 
   if (attributes) {

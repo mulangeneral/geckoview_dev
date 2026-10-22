@@ -6,6 +6,19 @@ function openIdentityPopup() {
   return viewShown;
 }
 
+function closeIdentityPopup() {
+  let popup = gIdentityHandler._identityPopup;
+  if (!popup) {
+    return Promise.resolve();
+  }
+  // Register before hiding, and go through gIdentityHandler so that a popup
+  // which is still opening gets its pending open cancelled rather than being
+  // left open with no popuphidden ever firing.
+  let hidden = BrowserTestUtils.waitForPopupEvent(popup, "hidden");
+  gIdentityHandler.hidePopup();
+  return hidden;
+}
+
 function openPermissionPopup() {
   gPermissionPanel._initializePopup();
   let mainView = document.getElementById("permission-popup-mainView");
@@ -16,40 +29,6 @@ function openPermissionPopup() {
 
 function getIdentityMode(aWindow = window) {
   return aWindow.document.getElementById("identity-box").className;
-}
-
-/**
- * Waits for a load (or custom) event to finish in a given tab. If provided
- * load an uri into the tab.
- *
- * @param tab
- *        The tab to load into.
- * @param [optional] url
- *        The url to load, or the current url.
- * @return {Promise} resolved when the event is handled.
- * @resolves to the received event
- * @rejects if a valid load event is not received within a meaningful interval
- */
-function promiseTabLoadEvent(tab, url) {
-  info("Wait tab event: load");
-
-  function handle(loadedUrl) {
-    if (loadedUrl === "about:blank" || (url && loadedUrl !== url)) {
-      info(`Skipping spurious load event for ${loadedUrl}`);
-      return false;
-    }
-
-    info("Tab event received: load");
-    return true;
-  }
-
-  let loaded = BrowserTestUtils.browserLoaded(tab.linkedBrowser, false, handle);
-
-  if (url) {
-    BrowserTestUtils.startLoadingURIString(tab.linkedBrowser, url);
-  }
-
-  return loaded;
 }
 
 // Compares the security state of the page with what is expected
@@ -93,9 +72,9 @@ function isSecurityState(browser, expectedState) {
  * Test the state of the identity box and control center to make
  * sure they are correctly showing the expected mixed content states.
  *
- * @note The checks are done synchronously, but new code should wait on the
- *       returned Promise object to ensure the identity panel has closed.
- *       Bug 1221114 is filed to fix the existing code.
+ * Note: The checks are done synchronously, but new code should wait on the
+ * returned Promise object to ensure the identity panel has closed.
+ * Bug 1221114 is filed to fix the existing code.
  *
  * @param tabbrowser
  * @param Object states
@@ -106,8 +85,8 @@ function isSecurityState(browser, expectedState) {
  *           passiveLoaded: true|false,
  *        }
  *
- * @return {Promise}
- * @resolves When the operation has finished and the identity panel has closed.
+ * @returns {Promise<void>}
+ *   Resolves when the operation has finished and the identity panel has closed.
  */
 async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   if (
@@ -122,12 +101,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   }
 
   let { passiveLoaded, activeLoaded, activeBlocked } = states;
-  let { gIdentityHandler } = tabbrowser.ownerGlobal;
+  let { gIdentityHandler } = tabbrowser.documentGlobal;
   let doc = tabbrowser.ownerDocument;
   let identityBox = gIdentityHandler._identityBox;
   let classList = identityBox.classList;
   let identityIcon = doc.getElementById("identity-icon");
-  let identityIconImage = tabbrowser.ownerGlobal
+  let identityIconImage = tabbrowser.documentGlobal
     .getComputedStyle(identityIcon)
     .getPropertyValue("list-style-image");
 
@@ -237,7 +216,7 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
   // Make sure the identity popup has the correct mixedcontent states
   let promisePanelOpen = BrowserTestUtils.waitForEvent(
-    tabbrowser.ownerGlobal,
+    tabbrowser.documentGlobal,
     "popupshown",
     true,
     event => event.target == gIdentityHandler._identityPopup
@@ -286,14 +265,14 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
 
   // Make sure the correct icon is visible in the Control Center.
   // This logic is controlled with CSS, so this helps prevent regressions there.
-  let securityViewBG = tabbrowser.ownerGlobal
+  let securityViewBG = tabbrowser.documentGlobal
     .getComputedStyle(
       document
         .getElementById("identity-popup-securityView")
         .getElementsByClassName("identity-popup-security-connection")[0]
     )
     .getPropertyValue("list-style-image");
-  let securityContentBG = tabbrowser.ownerGlobal
+  let securityContentBG = tabbrowser.documentGlobal
     .getComputedStyle(
       document
         .getElementById("identity-popup-mainView")
@@ -317,12 +296,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
   if (stateSecure) {
     is(
       securityViewBG,
-      'url("chrome://global/skin/icons/security.svg")',
+      'url("chrome://global/skin/icons/security-custom-root.svg")',
       "CC using secure icon"
     );
     is(
       securityContentBG,
-      'url("chrome://global/skin/icons/security.svg")',
+      'url("chrome://global/skin/icons/security-custom-root.svg")',
       "CC using secure icon"
     );
   }
@@ -354,12 +333,12 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
       // There is a case here with weak ciphers, but no bc tests are handling this yet.
       is(
         securityViewBG,
-        'url("chrome://global/skin/icons/security.svg")',
+        'url("chrome://global/skin/icons/security-custom-root.svg")',
         "CC using degraded icon"
       );
       is(
         securityContentBG,
-        'url("chrome://global/skin/icons/security.svg")',
+        'url("chrome://global/skin/icons/security-custom-root.svg")',
         "CC using degraded icon"
       );
     }
@@ -384,36 +363,121 @@ async function assertMixedContentBlockingState(tabbrowser, states = {}) {
     );
   }
 
-  if (gIdentityHandler._identityPopup.state != "closed") {
-    let hideEvent = BrowserTestUtils.waitForEvent(
-      gIdentityHandler._identityPopup,
-      "popuphidden"
-    );
-    info("Hiding identity popup");
-    gIdentityHandler._identityPopup.hidePopup();
-    await hideEvent;
-  }
+  info("Hiding identity popup");
+  await closeIdentityPopup();
 }
 
-async function loadBadCertPage(url) {
-  let loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
-  BrowserTestUtils.startLoadingURIString(gBrowser.selectedBrowser, url);
+/**
+ * Click an element in the error page loaded in the selected browser.
+ *
+ * synthesizeMouseAtCenter() dispatches at viewport coordinates without
+ * scrolling or waiting for a paint, so the click is lost unless the element is
+ * laid out, in view and already known to APZ.
+ * promiseElementReadyForUserInput() round-trips a mousemove through real hit
+ * testing and throws if the element never becomes interactive, so a lost click
+ * is reported rather than left to time out the test.
+ *
+ * @param {string} selector Selector for the element, or for the custom element
+ *   hosting it when shadowProperty is passed.
+ * @param {string} [shadowProperty] Property of the element matched by selector
+ *   holding the element to click, for buttons in <net-error-card>'s shadow
+ *   root.
+ */
+async function clickErrorPageElement(selector, shadowProperty) {
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [selector, shadowProperty],
+    async (contentSelector, contentShadowProperty) => {
+      let element = content.document.querySelector(contentSelector);
+      if (contentShadowProperty) {
+        const host = element.wrappedJSObject;
+        await host.getUpdateComplete();
+        element = host[contentShadowProperty];
+      }
+      element.scrollIntoView({ block: "center" });
+      await EventUtils.promiseElementReadyForUserInput(element, content);
+      EventUtils.synthesizeMouseAtCenter(element, {}, content);
+    }
+  );
+}
+
+/**
+ * Wait until the exception button of the error page can be clicked.
+ *
+ * @param {boolean} feltPrivacyV1 Whether the felt privacy error page is
+ *   enabled.
+ */
+async function waitForExceptionButtonEnabled(feltPrivacyV1) {
+  await SpecialPowers.spawn(
+    gBrowser.selectedBrowser,
+    [feltPrivacyV1],
+    async prefFeltPrivacyV1 => {
+      if (prefFeltPrivacyV1) {
+        const netErrorCardElement =
+          content.document.querySelector("net-error-card");
+        const netErrorCard = netErrorCardElement.wrappedJSObject;
+        // The exception button is not rendered until the advanced panel is
+        // revealed, and is disabled until ten animation frames later.
+        await ContentTaskUtils.waitForMutationCondition(
+          netErrorCardElement.shadowRoot,
+          { childList: true, subtree: true, attributes: true },
+          () =>
+            netErrorCard.exceptionButton &&
+            !netErrorCard.exceptionButton.disabled
+        );
+        return;
+      }
+      const advancedPanel = content.document.getElementById(
+        "badCertAdvancedPanel"
+      );
+      const exceptionButton = content.document.getElementById(
+        "exceptionDialogButton"
+      );
+      // The exception button starts out enabled and is only disabled once
+      // revealing the advanced panel begins, so waiting on the button alone
+      // would return before the panel has been revealed at all.
+      await ContentTaskUtils.waitForMutationCondition(
+        advancedPanel,
+        { attributes: true, subtree: true },
+        () => !advancedPanel.hidden && !exceptionButton.disabled
+      );
+    }
+  );
+}
+
+async function loadBadCertPage(url, feltPrivacyV1) {
+  const loaded = BrowserTestUtils.waitForErrorPage(gBrowser.selectedBrowser);
+  const loadFlagsSkipCache =
+    Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_PROXY |
+    Ci.nsIWebNavigation.LOAD_FLAGS_BYPASS_CACHE;
+  BrowserTestUtils.startLoadingURIString(
+    gBrowser.selectedBrowser,
+    url,
+    loadFlagsSkipCache
+  );
   await loaded;
 
-  await SpecialPowers.spawn(gBrowser.selectedBrowser, [], async function () {
-    content.document.getElementById("exceptionDialogButton").click();
-  });
+  if (feltPrivacyV1) {
+    await clickErrorPageElement("net-error-card", "advancedButton");
+    await waitForExceptionButtonEnabled(feltPrivacyV1);
+    await clickErrorPageElement("net-error-card", "exceptionButton");
+  } else {
+    await clickErrorPageElement("#advancedButton");
+    await waitForExceptionButtonEnabled(feltPrivacyV1);
+    await clickErrorPageElement("#exceptionDialogButton");
+  }
+
   await BrowserTestUtils.browserLoaded(gBrowser.selectedBrowser);
 }
 
 // nsITLSServerSocket needs a certificate with a corresponding private key
 // available. In mochitests, the certificate with the common name "Mochitest
 // client" has such a key.
-function getTestServerCertificate() {
+async function getTestServerCertificate() {
   const certDB = Cc["@mozilla.org/security/x509certdb;1"].getService(
     Ci.nsIX509CertDB
   );
-  for (const cert of certDB.getCerts()) {
+  for (const cert of await certDB.getCerts()) {
     if (cert.commonName == "Mochitest client") {
       return cert;
     }

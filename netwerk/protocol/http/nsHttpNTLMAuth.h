@@ -2,11 +2,11 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef nsHttpNTLMAuth_h__
-#define nsHttpNTLMAuth_h__
+#ifndef nsHttpNTLMAuth_h_
+#define nsHttpNTLMAuth_h_
 
-#include "nsIHttpAuthenticator.h"
 #include "mozilla/StaticPtr.h"
+#include "nsIHttpAuthenticator.h"
 
 namespace mozilla {
 namespace net {
@@ -27,10 +27,14 @@ class nsHttpNTLMAuth : public nsIHttpAuthenticator {
   // or the internal one.
   bool mUseNative{false};
 
+  // Whether the prefs let this host use the logged-in user's identity. Set by
+  // ChallengeReceived, read by GenerateCredentials.
+  bool mAllowDefaultCredentials{false};
+
   static StaticRefPtr<nsHttpNTLMAuth> gSingleton;
 };
 
 }  // namespace net
 }  // namespace mozilla
 
-#endif  // !nsHttpNTLMAuth_h__
+#endif  // !nsHttpNTLMAuth_h_

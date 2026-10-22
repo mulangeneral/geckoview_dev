@@ -183,9 +183,11 @@ def test_build_kwargs_with_address(build_kwargs_using, address):
 def test_build_kwargs_with_binary_or_address(
     expected_driver_args, build_kwargs_using, binary, address
 ):
-    built_kwargs = build_kwargs_using(
-        {"binary": binary, "address": address, "emulator": None}
-    )
+    built_kwargs = build_kwargs_using({
+        "binary": binary,
+        "address": address,
+        "emulator": None,
+    })
     if binary:
         expected_driver_args["bin"] = binary
         if address:
@@ -452,7 +454,7 @@ def test_add_tests(mock_runner):
 
 
 def test_repeat(mock_runner):
-    def update_result(test, expected):
+    def update_result(test, expected, **kwargs):
         mock_runner.failed += 1
 
     fake_tests = ["test_1.py"]
@@ -466,7 +468,7 @@ def test_repeat(mock_runner):
 
 
 def test_run_until_failure(mock_runner):
-    def update_result(test, expected):
+    def update_result(test, expected, **kwargs):
         mock_runner.failed += 1
 
     fake_tests = ["test_1.py"]

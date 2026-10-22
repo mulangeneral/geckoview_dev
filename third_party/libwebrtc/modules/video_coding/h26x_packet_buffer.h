@@ -12,15 +12,15 @@
 #define MODULES_VIDEO_CODING_H26X_PACKET_BUFFER_H_
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <map>
 #include <memory>
-#include <optional>
 #include <string>
 #include <vector>
 
 #include "absl/base/attributes.h"
 #include "modules/video_coding/packet_buffer.h"
-#include "rtc_base/numerics/sequence_number_unwrapper.h"
 
 namespace webrtc {
 
@@ -41,6 +41,8 @@ class H26xPacketBuffer {
 
   // Out of band supplied codec parameters for H.264.
   void SetSpropParameterSets(const std::string& sprop_parameter_sets);
+
+  void SetH264IdrOnlyKeyframesAllowed(bool allowed);
 
  private:
   // Stores PPS payload and the active SPS ID.
@@ -91,7 +93,7 @@ class H26xPacketBuffer {
   bool FixH264Packet(Packet& packet);
 
   // Indicates whether IDR frames without SPS and PPS are allowed.
-  const bool h264_idr_only_keyframes_allowed_;
+  bool h264_idr_only_keyframes_allowed_ = false;
   std::array<std::unique_ptr<Packet>, kBufferSize> buffer_;
   std::array<int64_t, kNumTrackedSequences> last_continuous_in_sequence_;
   int64_t last_continuous_in_sequence_index_ = 0;

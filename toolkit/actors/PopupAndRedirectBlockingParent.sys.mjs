@@ -89,7 +89,7 @@ export class PopupAndRedirectBlocker {
    * Event callback for the notification that is shown when a popup or
    * redirect is blocked. This is used in the observer.
    *
-   * @param {*} reason
+   * @param {any} reason
    */
   eventCallback(reason) {
     if (reason == "dismissed") {
@@ -163,7 +163,7 @@ export class PopupAndRedirectBlocker {
 
   unblockPopup(aBrowsingContext, aInnerWindowId, aReportIndex) {
     const sourceWG = aBrowsingContext.currentWindowGlobal;
-    if (!sourceWG || sourceWG.innerWindowId != aInnerWindowId) {
+    if (sourceWG?.innerWindowId != aInnerWindowId) {
       return;
     }
 

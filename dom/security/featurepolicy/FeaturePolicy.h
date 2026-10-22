@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -21,10 +19,10 @@
  * used to allow or deny features in their contexts.
  *
  * FeaturePolicy is composed by a set of directives configured by the
- * 'Feature-Policy' HTTP Header and the 'allow' attribute in HTMLIFrameElements.
- * Both header and attribute are parsed by FeaturePolicyParser which returns an
- * array of Feature objects. Each Feature object has a feature name and one of
- * these policies:
+ * 'Permissions-Policy' HTTP Header and the 'allow' attribute in
+ * HTMLIFrameElements. Both header and attribute are parsed by
+ * FeaturePolicyParser which returns an array of Feature objects. Each Feature
+ * object has a feature name and one of these policies:
  * - eNone - the feature is fully disabled.
  * - eAll - the feature is allowed.
  * - eAllowList - the feature is allowed for a list of origins.
@@ -100,11 +98,18 @@ class FeaturePolicy final : public nsISupports, public nsWrapperCache {
   // Inherits the policy from the 'parent' context if it exists.
   void InheritPolicy(const FeaturePolicyInfo& aContainerFeaturePolicyInfo);
 
-  // Sets the declarative part of the policy. This can be from the HTTP header
-  // or for the 'allow' HTML attribute.
-  void SetDeclaredPolicy(mozilla::dom::Document* aDocument,
-                         const nsAString& aPolicyString,
-                         nsIPrincipal* aSelfOrigin, nsIPrincipal* aSrcOrigin);
+  // Parses and sets a policy from an iframe `allow` attribute. Attribute
+  // policies use a different syntax from Permissions-Policy response headers.
+  void SetDeclaredAttributePolicy(mozilla::dom::Document* aDocument,
+                                  const nsAString& aPolicyString,
+                                  nsIPrincipal* aSelfOrigin,
+                                  nsIPrincipal* aSrcOrigin);
+
+  // Parses and sets a Permissions-Policy response header using Structured
+  // Fields.
+  void SetDeclaredHeaderPolicy(mozilla::dom::Document* aDocument,
+                               const nsAString& aPolicyString,
+                               nsIPrincipal* aSelfOrigin);
 
   // This method creates a policy for aFeatureName allowing it to '*' if it
   // doesn't exist yet. It's used by HTMLIFrameElement to enable features by

@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,8 +22,8 @@ void CheckParser(const nsAString& aInput, bool aExpectedResults,
   nsCOMPtr<nsIPrincipal> principal =
       mozilla::BasePrincipal::CreateContentPrincipal(URL_SELF);
   nsTArray<Feature> parsedFeatures;
-  ASSERT_TRUE(FeaturePolicyParser::ParseString(aInput, nullptr, principal,
-                                               principal, parsedFeatures) ==
+  ASSERT_TRUE(FeaturePolicyParser::ParsePolicyFromAttribute(
+                  aInput, nullptr, principal, principal, parsedFeatures) ==
               aExpectedResults);
   ASSERT_TRUE(parsedFeatures.Length() == aExpectedFeatures);
 

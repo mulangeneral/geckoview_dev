@@ -2,9 +2,9 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "gtest/gtest.h"
 #include "MediaControlService.h"
 #include "MediaController.h"
+#include "gtest/gtest.h"
 #include "mozilla/dom/MediaSessionBinding.h"
 
 using namespace mozilla::dom;
@@ -29,43 +29,19 @@ TEST(MediaController, IsAnyMediaBeingControlled)
   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStarted, false);
+                                         MediaPlaybackState::eStarted);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStarted, false);
+                                         MediaPlaybackState::eStarted);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStopped, false);
+                                         MediaPlaybackState::eStopped);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStopped, false);
-  ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
-}
-
-TEST(MediaController, HasVideoMedia)
-{
-  RefPtr<MediaController> controller = new MediaController(CONTROLLER_ID);
-  ASSERT_TRUE(!controller->HasVideoMedia());
-
-  controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStarted, false);
-  controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::ePlayed, false);
-  ASSERT_TRUE(!controller->HasVideoMedia());
-
-  controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::ePlayed, true);
-  ASSERT_TRUE(controller->HasVideoMedia());
-
-  controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::ePaused, true);
-  ASSERT_TRUE(!controller->HasVideoMedia());
-
-  controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStopped, false);
+                                         MediaPlaybackState::eStopped);
   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
 }
 
@@ -74,15 +50,14 @@ class FakeControlledMedia final {
   explicit FakeControlledMedia(MediaController* aController)
       : mController(aController) {
     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                            MediaPlaybackState::eStarted,
-                                            false);
+                                            MediaPlaybackState::eStarted);
   }
 
   void SetPlaying(MediaPlaybackState aState) {
     if (mPlaybackState == aState) {
       return;
     }
-    mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID, aState, false);
+    mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID, aState);
     mPlaybackState = aState;
   }
 
@@ -97,12 +72,10 @@ class FakeControlledMedia final {
   ~FakeControlledMedia() {
     if (mPlaybackState == MediaPlaybackState::ePlayed) {
       mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                              MediaPlaybackState::ePaused,
-                                              false);
+                                              MediaPlaybackState::ePaused);
     }
     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                            MediaPlaybackState::eStopped,
-                                            false);
+                                            MediaPlaybackState::eStopped);
   }
 
  private:
@@ -228,4 +201,121 @@ TEST(MediaController, PictureInPictureModeOrFullscreen)
 
   controller->NotifyMediaFullScreenState(FAKE_CONTEXT_ID, false);
   ASSERT_TRUE(!controller->IsBeingUsedInPIPModeOrFullscreen());
+}
+
+// Helper that simulates an uncontrollable source (e.g. Web Audio, Web Speech)
+// reporting its audibility lifecycle to the MediaController. The destructor
+// drops audibility automatically so individual tests don't have to do it.
+class FakeUncontrollableSource final {
+ public:
+  explicit FakeUncontrollableSource(MediaController* aController,
+                                    uint64_t aContextId = FAKE_CONTEXT_ID)
+      : mController(aController), mContextId(aContextId) {}
+
+  void SetAudible(MediaAudibleState aState) {
+    if (mAudibleState == aState) {
+      return;
+    }
+    mController->NotifyMediaAudibleChanged(mContextId, aState,
+                                           ControlType::eUncontrollable);
+    mAudibleState = aState;
+  }
+
+  ~FakeUncontrollableSource() {
+    if (mAudibleState == MediaAudibleState::eAudible) {
+      mController->NotifyMediaAudibleChanged(mContextId,
+                                             MediaAudibleState::eInaudible,
+                                             ControlType::eUncontrollable);
+    }
+  }
+
+ private:
+  MediaAudibleState mAudibleState = MediaAudibleState::eInaudible;
+  RefPtr<MediaController> mController;
+  uint64_t mContextId;
+};
+
+TEST(MediaController, UncontrollableSourceAudible)
+{
+  RefPtr<MediaController> controller = new MediaController(CONTROLLER_ID);
+  ASSERT_FALSE(controller->IsAudible());
+
+  FakeUncontrollableSource src(controller);
+  src.SetAudible(MediaAudibleState::eAudible);
+  ASSERT_TRUE(controller->IsAudible());
+
+  src.SetAudible(MediaAudibleState::eInaudible);
+  ASSERT_FALSE(controller->IsAudible());
+}
+
+TEST(MediaController, UncontrollableSourceDoesNotActivateController)
+{
+  RefPtr<MediaControlService> service = MediaControlService::GetService();
+  ASSERT_TRUE(service->GetActiveControllersNum() == 0);
+
+  RefPtr<MediaController> controller = new MediaController(FIRST_CONTROLLER_ID);
+  {
+    FakeUncontrollableSource src(controller);
+    ASSERT_TRUE(service->GetActiveControllersNum() == 0);
+    src.SetAudible(MediaAudibleState::eAudible);
+    ASSERT_TRUE(service->GetActiveControllersNum() == 0);
+  }
+  ASSERT_TRUE(service->GetActiveControllersNum() == 0);
+}
+
+TEST(MediaController, UncontrollableAudibleCombinedWithControllable)
+{
+  RefPtr<MediaController> controller = new MediaController(CONTROLLER_ID);
+
+  FakeControlledMedia controlSrc(controller);
+  controlSrc.SetPlaying(MediaPlaybackState::ePlayed);
+  ASSERT_FALSE(controller->IsAudible());
+
+  FakeUncontrollableSource uncontrolSrc(controller);
+  uncontrolSrc.SetAudible(MediaAudibleState::eAudible);
+  ASSERT_TRUE(controller->IsAudible());
+
+  // Both sources audible: controllable becomes inaudible, controller must
+  // still report audible because the uncontrollable source is still audible.
+  controlSrc.SetAudible(MediaAudibleState::eAudible);
+  ASSERT_TRUE(controller->IsAudible());
+  controlSrc.SetAudible(MediaAudibleState::eInaudible);
+  ASSERT_TRUE(controller->IsAudible());
+
+  // Now the uncontrollable source goes inaudible too: controller is silent.
+  uncontrolSrc.SetAudible(MediaAudibleState::eInaudible);
+  ASSERT_FALSE(controller->IsAudible());
+
+  // And bringing only the controllable back is enough on its own.
+  controlSrc.SetAudible(MediaAudibleState::eAudible);
+  ASSERT_TRUE(controller->IsAudible());
+
+  // Drop audibility before scope exit; FakeControlledMedia's destructor only
+  // emits ePaused/eStopped, and MediaPlaybackStatus asserts the source is
+  // inaudible by the time it is destroyed.
+  controlSrc.SetAudible(MediaAudibleState::eInaudible);
+}
+
+TEST(MediaController, MultipleUncontrollableSources)
+{
+  RefPtr<MediaController> controller = new MediaController(CONTROLLER_ID);
+  ASSERT_FALSE(controller->IsAudible());
+
+  {
+    FakeUncontrollableSource src1(controller, 1);
+    FakeUncontrollableSource src2(controller, 2);
+
+    src1.SetAudible(MediaAudibleState::eAudible);
+    ASSERT_TRUE(controller->IsAudible());
+
+    src2.SetAudible(MediaAudibleState::eAudible);
+    ASSERT_TRUE(controller->IsAudible());
+
+    src1.SetAudible(MediaAudibleState::eInaudible);
+    ASSERT_TRUE(controller->IsAudible());
+
+    src2.SetAudible(MediaAudibleState::eInaudible);
+    ASSERT_FALSE(controller->IsAudible());
+  }
+  ASSERT_FALSE(controller->IsAudible());
 }

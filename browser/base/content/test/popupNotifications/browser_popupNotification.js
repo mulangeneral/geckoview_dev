@@ -159,7 +159,7 @@ var tests = [
   {
     id: "Test#4",
     async run() {
-      // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+      // eslint-disable-next-line sdl/no-insecure-url
       let tab = BrowserTestUtils.addTab(gBrowser, "http://example.com/");
       await BrowserTestUtils.browserLoaded(tab.linkedBrowser);
       isnot(gBrowser.selectedTab, tab, "new tab isn't selected");
@@ -337,9 +337,8 @@ var tests = [
     },
     onShown(popup) {
       let notification = popup.children[0];
-      is(
-        notification.getAttribute("secondarybuttonhidden"),
-        "true",
+      ok(
+        notification.hasAttribute("secondarybuttonhidden"),
         "secondary button is hidden"
       );
       ok(

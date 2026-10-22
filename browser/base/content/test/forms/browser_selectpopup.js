@@ -89,7 +89,7 @@ const PAGECONTENT_TRANSLATED =
   "<html><body>" +
   "<div id='div'>" +
   "<iframe id='frame' width='320' height='295' style='border: none;'" +
-  "        src='data:text/html,<select id=select><option>he he he</option><option>boo boo</option><option>baz baz</option></select>'" +
+  "        src='data:text/html,<select id=select><option>he he he</option><option>boo boo</option><option>baz baz</option></select>'>" +
   "</iframe>" +
   "</div></body></html>";
 
@@ -178,7 +178,7 @@ async function doSelectTests(contentType, content) {
     [{ isWindows }],
     function (args) {
       Assert.equal(
-        String(content.getSelection()),
+        String(content.getSelection()).trim(),
         args.isWindows ? "Text" : "",
         "Select all while popup is open"
       );
@@ -288,10 +288,7 @@ async function doSelectTests(contentType, content) {
 
 add_setup(async function () {
   await SpecialPowers.pushPrefEnv({
-    set: [
-      ["test.wait300msAfterTabSwitch", true],
-      ["dom.forms.select.customstyling", true],
-    ],
+    set: [["dom.forms.select.customstyling", true]],
   });
 });
 
@@ -357,6 +354,7 @@ add_task(async function () {
 // This test opens a select popup that is isn't a frame and has some translations applied.
 add_task(async function () {
   const pageUrl = "data:text/html," + escape(PAGECONTENT_TRANSLATED);
+  info(`pageUrl: data:text/html,${PAGECONTENT_TRANSLATED}`);
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser, pageUrl);
 
   // We need to explicitly call Element.focus() since dataURL is treated as
@@ -437,6 +435,7 @@ add_task(async function () {
     expectedX += step[2];
     expectedY += step[3];
 
+    // FIXME: These expectations are not aware of HiDPI environment.
     let popupRect = selectPopup.getBoundingClientRect();
     is(popupRect.left, expectedX, "step " + (stepIndex + 1) + " x");
     is(popupRect.top, expectedY, "step " + (stepIndex + 1) + " y");
@@ -513,8 +512,8 @@ add_task(async function test_event_order() {
 
         let eventsPromise = SpecialPowers.spawn(
           browser,
-          [[mode, expected]],
-          async function ([contentMode, contentExpected]) {
+          [mode, expected],
+          async function (contentMode, contentExpected) {
             return new Promise(resolve => {
               function onEvent(event) {
                 select.removeEventListener(event.type, onEvent);

@@ -1,23 +1,21 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#include "nsTHashMap.h"
 #include "WebTaskScheduler.h"
-#include "WebTaskSchedulerWorker.h"
-#include "WebTaskSchedulerMainThread.h"
-#include "nsGlobalWindowInner.h"
 
-#include "mozilla/dom/WorkerPrivate.h"
+#include "WebTaskSchedulerMainThread.h"
+#include "WebTaskSchedulerWorker.h"
 #include "mozilla/dom/TimeoutManager.h"
+#include "mozilla/dom/WorkerPrivate.h"
+#include "nsGlobalWindowInner.h"
+#include "nsTHashMap.h"
 
 namespace mozilla::dom {
 
 // Keeps track of all the existings schedulers that
 // share the same event loop.
-MOZ_RUNINIT static LinkedList<WebTaskScheduler> gWebTaskSchedulersMainThread;
+constinit static LinkedList<WebTaskScheduler> gWebTaskSchedulersMainThread;
 
 static Atomic<uint64_t> gWebTaskEnqueueOrder(0);
 
@@ -61,6 +59,13 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(WebTaskSchedulingState)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mAbortSource, mPrioritySource);
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+
+NS_IMPL_CYCLE_COLLECTING_ADDREF(WebTaskSchedulingState)
+NS_IMPL_CYCLE_COLLECTING_RELEASE(WebTaskSchedulingState)
+
+NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(WebTaskSchedulingState)
+  NS_INTERFACE_MAP_ENTRY(nsISupports)
+NS_INTERFACE_MAP_END
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WebTask)
 
@@ -165,13 +170,13 @@ bool WebTask::Run() {
     return false;
   }
 
-  // 11.2.2 Set event loop’s current scheduling state to state.
-  global->SetWebTaskSchedulingState(mSchedulingState);
-
   AutoJSAPI jsapi;
   if (!jsapi.Init(global)) {
     return false;
   }
+
+  // 11.2.2 Set event loop’s current scheduling state to state.
+  global->SetWebTaskSchedulingState(mSchedulingState);
 
   JS::Rooted<JS::Value> returnVal(jsapi.cx());
 
@@ -228,7 +233,8 @@ inline void ImplCycleCollectionTraverse(
   }
 }
 
-NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE(WebTaskScheduler, mParent, mWebTaskQueues)
+NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_WEAK_PTR(WebTaskScheduler, mParent,
+                                               mWebTaskQueues)
 
 /* static */
 already_AddRefed<WebTaskSchedulerMainThread>

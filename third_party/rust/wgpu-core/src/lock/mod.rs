@@ -27,8 +27,8 @@
 //!
 //! Otherwise, `wgpu-core` uses the [`vanilla`] module's locks.
 //!
-//! [`Mutex`]: parking_lot::Mutex
-//! [`RwLock`]: parking_lot::RwLock
+//! [`Mutex`]: wgpu_sync::Mutex
+//! [`RwLock`]: wgpu_sync::RwLock
 //! [`SnatchLock`]: crate::snatch::SnatchLock
 
 pub mod rank;
@@ -52,4 +52,4 @@ use observing as chosen;
 #[cfg(not(any(wgpu_validate_locks, feature = "observe_locks")))]
 use vanilla as chosen;
 
-pub use chosen::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
+pub use chosen::{Mutex, MutexGuard, RankData, RwLock, RwLockReadGuard, RwLockWriteGuard};

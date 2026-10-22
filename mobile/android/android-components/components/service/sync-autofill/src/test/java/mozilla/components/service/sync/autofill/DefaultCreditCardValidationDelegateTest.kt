@@ -5,7 +5,6 @@
 package mozilla.components.service.sync.autofill
 
 import androidx.test.ext.junit.runners.AndroidJUnit4
-import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.runBlocking
 import mozilla.appservices.RustComponentsInitializer
 import mozilla.components.concept.storage.CreditCardEntry
@@ -19,7 +18,6 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 
-@ExperimentalCoroutinesApi
 @RunWith(AndroidJUnit4::class)
 class DefaultCreditCardValidationDelegateTest {
 
@@ -37,25 +35,25 @@ class DefaultCreditCardValidationDelegateTest {
     }
 
     @Test
-    fun `WHEN no credit cards exist in the storage, THEN add the new credit card to storage`() =
-        runBlocking {
-            val newCreditCard = createCreditCardEntry(guid = "1")
-            val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
+    fun `WHEN no credit cards exist in the storage, THEN add the new credit card to storage`() = runBlocking {
+        val newCreditCard = createCreditCardEntry(guid = "1")
+        val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
 
-            assertEquals(Result.CanBeCreated, result)
-        }
+        assertEquals(Result.CanBeCreated, result)
+    }
 
     @Test
     fun `WHEN existing credit card matches by guid and card number, THEN update the credit card in storage`() =
         runBlocking {
-            val creditCardFields = NewCreditCardFields(
-                billingName = "Pineapple Orange",
-                plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
-                cardNumberLast4 = "1111",
-                expiryMonth = 12,
-                expiryYear = 2028,
-                cardType = "visa",
-            )
+            val creditCardFields =
+                NewCreditCardFields(
+                    billingName = "Pineapple Orange",
+                    plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
+                    cardNumberLast4 = "1111",
+                    expiryMonth = 12,
+                    expiryYear = 2028,
+                    cardType = "visa",
+                )
             val creditCard = storage.addCreditCard(creditCardFields)
             val newCreditCard = createCreditCardEntry(guid = creditCard.guid)
             val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
@@ -64,9 +62,9 @@ class DefaultCreditCardValidationDelegateTest {
         }
 
     @Test
-    fun `WHEN existing credit card matches by guid only, THEN update the credit card in storage`() =
-        runBlocking {
-            val creditCardFields = NewCreditCardFields(
+    fun `WHEN existing credit card matches by guid only, THEN update the credit card in storage`() = runBlocking {
+        val creditCardFields =
+            NewCreditCardFields(
                 billingName = "Pineapple Orange",
                 plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
                 cardNumberLast4 = "1111",
@@ -74,24 +72,25 @@ class DefaultCreditCardValidationDelegateTest {
                 expiryYear = 2028,
                 cardType = "visa",
             )
-            val creditCard = storage.addCreditCard(creditCardFields)
-            val newCreditCard = createCreditCardEntry(guid = creditCard.guid)
-            val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
+        val creditCard = storage.addCreditCard(creditCardFields)
+        val newCreditCard = createCreditCardEntry(guid = creditCard.guid)
+        val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
 
-            assertEquals(Result.CanBeUpdated(creditCard), result)
-        }
+        assertEquals(Result.CanBeUpdated(creditCard), result)
+    }
 
     @Test
     fun `WHEN existing credit card matches by card number only, THEN update the credit card in storage`() =
         runBlocking {
-            val creditCardFields = NewCreditCardFields(
-                billingName = "Pineapple Orange",
-                plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
-                cardNumberLast4 = "1111",
-                expiryMonth = 12,
-                expiryYear = 2028,
-                cardType = "visa",
-            )
+            val creditCardFields =
+                NewCreditCardFields(
+                    billingName = "Pineapple Orange",
+                    plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
+                    cardNumberLast4 = "1111",
+                    expiryMonth = 12,
+                    expiryYear = 2028,
+                    cardType = "visa",
+                )
             val creditCard = storage.addCreditCard(creditCardFields)
             val newCreditCard = createCreditCardEntry(cardNumber = "4111111111111111")
             val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
@@ -103,14 +102,15 @@ class DefaultCreditCardValidationDelegateTest {
     fun `WHEN existing credit card does not match by guid and card number, THEN add the new credit card to storage`() =
         runBlocking {
             val newCreditCard = createCreditCardEntry(guid = "2")
-            val creditCardFields = NewCreditCardFields(
-                billingName = "Pineapple Orange",
-                plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
-                cardNumberLast4 = "1111",
-                expiryMonth = 12,
-                expiryYear = 2028,
-                cardType = "visa",
-            )
+            val creditCardFields =
+                NewCreditCardFields(
+                    billingName = "Pineapple Orange",
+                    plaintextCardNumber = CreditCardNumber.Plaintext("4111111111111111"),
+                    cardNumberLast4 = "1111",
+                    expiryMonth = 12,
+                    expiryYear = 2028,
+                    cardType = "visa",
+                )
             storage.addCreditCard(creditCardFields)
 
             val result = validationDelegate.shouldCreateOrUpdate(newCreditCard)
@@ -126,11 +126,12 @@ fun createCreditCardEntry(
     expiryMonth: String = "1",
     expiryYear: String = "2030",
     cardType: String = "amex",
-) = CreditCardEntry(
-    guid = guid,
-    name = billingName,
-    number = cardNumber,
-    expiryMonth = expiryMonth,
-    expiryYear = expiryYear,
-    cardType = cardType,
-)
+) =
+    CreditCardEntry(
+        guid = guid,
+        name = billingName,
+        number = cardNumber,
+        expiryMonth = expiryMonth,
+        expiryYear = expiryYear,
+        cardType = cardType,
+    )

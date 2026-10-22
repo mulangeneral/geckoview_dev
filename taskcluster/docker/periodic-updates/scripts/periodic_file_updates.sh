@@ -13,10 +13,10 @@ Usage: $(basename "$0") [-p product]
            # Use archive.m.o instead of the taskcluster index to get xpcshell
            [--use-ftp-builds]
            # Use git rather than hg. Using git does not currently support cloning (use
-           # --skip-repo as well).
+           # --skip-clone as well).
            [--use-git]
            # One (or more) of the following actions must be specified.
-           --hsts | --hpkp | --remote-settings | --suffix-list | --mobile-experiments | --ct-logs
+           --hsts | --hpkp | --remote-settings | --suffix-list | --mobile-experiments | --mobile-merino-manifest | --ct-logs
            -b branch
            # The name of top source directory to use for the repository clone.
            [-t topsrcdir]
@@ -44,6 +44,7 @@ DO_HPKP=false
 DO_REMOTE_SETTINGS=false
 DO_SUFFIX_LIST=false
 DO_MOBILE_EXPERIMENTS=false
+DO_MOBILE_MERINO_MANIFEST=false
 DO_CT_LOGS=false
 
 CLONE_REPO=true
@@ -71,6 +72,7 @@ while [ $# -gt 0 ]; do
     --remote-settings) DO_REMOTE_SETTINGS=true ;;
     --suffix-list) DO_SUFFIX_LIST=true ;;
     --mobile-experiments) DO_MOBILE_EXPERIMENTS=true ;;
+    --mobile-merino-manifest) DO_MOBILE_MERINO_MANIFEST=true ;;
     --ct-logs) DO_CT_LOGS=true ;;
     --skip-clone) CLONE_REPO=false ;;
     --skip-push) SKIP_PUSH=true ;;
@@ -93,9 +95,9 @@ if [ "${BRANCH}" == "" ]; then
 fi
 
 # Must choose at least one update action.
-if [ "$DO_HSTS" == "false" ] && [ "$DO_HPKP" == "false" ] && [ "$DO_REMOTE_SETTINGS" == "false" ] && [ "$DO_SUFFIX_LIST" == "false" ] && [ "$DO_MOBILE_EXPERIMENTS" == false ] && [ "$DO_CT_LOGS" == false ]
+if [ "$DO_HSTS" == "false" ] && [ "$DO_HPKP" == "false" ] && [ "$DO_REMOTE_SETTINGS" == "false" ] && [ "$DO_SUFFIX_LIST" == "false" ] && [ "$DO_MOBILE_EXPERIMENTS" == false ] && [ "$DO_MOBILE_MERINO_MANIFEST" == false ] && [ "$DO_CT_LOGS" == false ]
 then
-  echo "Error: you must specify at least one action from: --hsts, --hpkp, --remote-settings, or --suffix-list" >&2
+  echo "Error: you must specify at least one action from: --hsts, --hpkp, --remote-settings, --suffix-list, --mobile-experiments, --mobile-merino-manifest, or --ct-logs" >&2
   usage
   exit 13
 fi
@@ -119,7 +121,11 @@ if [ "${TOPSRCDIR}" == "" ]; then
 fi
 
 case "${BRANCH}" in
-  mozilla-central|comm-central|try )
+  try)
+    # don't clone try, that can only end in sadness
+    HGREPO="https://${HGHOST}/mozilla-central"
+    ;;
+  mozilla-central|comm-central )
     HGREPO="https://${HGHOST}/${BRANCH}"
     ;;
   mozilla-*|comm-* )
@@ -131,12 +137,11 @@ case "${BRANCH}" in
 esac
 
 BROWSER_ARCHIVE="target.tar.xz"
-TESTS_ARCHIVE="target.common.tests.tar.gz"
+TESTS_ARCHIVE="target.common.tests.tar.zst"
 
-UNPACK_CMD="tar Jxf"
+UNPACK_CMD="tar xf"
 COMMIT_AUTHOR='ffxbld <ffxbld@mozilla.com>'
 WGET="wget -nv"
-UNTAR="tar -zxf"
 DIFF="$(command -v diff) -u"
 JQ="$(command -v jq)"
 
@@ -172,12 +177,16 @@ PUBLIC_SUFFIX_URL="https://publicsuffix.org/list/public_suffix_list.dat"
 PUBLIC_SUFFIX_LOCAL="public_suffix_list.dat"
 HG_SUFFIX_LOCAL="effective_tld_names.dat"
 HG_SUFFIX_PATH="/netwerk/dns/${HG_SUFFIX_LOCAL}"
+PUBLIC_SUFFIX_END_MARKER="// ===END PRIVATE DOMAINS==="
 SUFFIX_LIST_UPDATED=false
 
 EXPERIMENTER_URL="https://experimenter.services.mozilla.com/api/v6/experiments-first-run/"
 FENIX_INITIAL_EXPERIMENTS="mobile/android/fenix/app/src/main/res/raw/initial_experiments.json"
 FOCUS_INITIAL_EXPERIMENTS="mobile/android/focus-android/app/src/main/res/raw/initial_experiments.json"
 MOBILE_EXPERIMENTS_UPDATED=false
+
+MOBILE_MERINO_MANIFEST_UPDATE_SCRIPT="${SCRIPTDIR}/update_mobile_merino_manifest.py"
+MOBILE_MERINO_MANIFEST_UPDATED=false
 
 CT_LOG_UPDATE_SCRIPT="${SCRIPTDIR}/getCTKnownLogs.py"
 
@@ -201,6 +210,41 @@ function create_repo_diff() {
   fi
 }
 
+# fetch_file DEST URL [REQUIRED_MARKER]
+# Returns non-zero on failure, for callers that can carry on without the file.
+function fetch_file {
+  local dest=$1 url=$2 marker=$3
+  rm -f "${dest}"
+  echo "INFO: ${WGET} -O ${dest} ${url}"
+  if ! ${WGET} -O "${dest}" "${url}"; then
+    echo "ERROR: download of ${url} failed" >&2
+    return 80
+  fi
+  if [ ! -s "${dest}" ]; then
+    echo "ERROR: ${url} returned an empty file" >&2
+    return 81
+  fi
+  if [ -n "${marker}" ] && ! grep -Fq -- "${marker}" "${dest}"; then
+    echo "ERROR: ${dest} from ${url} is missing '${marker}', truncated?" >&2
+    return 82
+  fi
+}
+
+# download_file DEST URL [REQUIRED_MARKER]
+# Must exit rather than return: callers run in `if` conditions, where `set -e` is disabled.
+function download_file {
+  fetch_file "$@" || exit $?
+}
+
+# download_json DEST URL
+function download_json {
+  download_file "$1" "$2"
+  if ! ${JQ} -e . "$1" > /dev/null; then
+    echo "ERROR: $2 did not return valid JSON" >&2
+    exit 83
+  fi
+}
+
 # Cleanup common artifacts.
 function preflight_cleanup {
   cd "${BASEDIR}"
@@ -220,10 +264,8 @@ function download_shared_artifacts_from_ftp {
   BROWSER_ARCHIVE_URL="https://${STAGEHOST}/pub/mozilla.org/${PRODUCT}/${ARTIFACT_DIR}/${BROWSER_ARCHIVE}"
   TESTS_ARCHIVE_URL="https://${STAGEHOST}/pub/mozilla.org/${PRODUCT}/${ARTIFACT_DIR}/${TESTS_ARCHIVE}"
 
-  echo "INFO: ${WGET} ${BROWSER_ARCHIVE_URL}"
-  ${WGET} "${BROWSER_ARCHIVE_URL}"
-  echo "INFO: ${WGET} ${TESTS_ARCHIVE_URL}"
-  ${WGET} "${TESTS_ARCHIVE_URL}"
+  download_file "${BROWSER_ARCHIVE}" "${BROWSER_ARCHIVE_URL}"
+  download_file "${TESTS_ARCHIVE}" "${TESTS_ARCHIVE_URL}"
 }
 
 function download_shared_artifacts_from_tc {
@@ -236,9 +278,9 @@ function download_shared_artifacts_from_tc {
   if [ "${USE_MC}" == "true" ]; then
     TASKID_URL="$index_base/task/gecko.v2.mozilla-central.shippable.latest.${PRODUCT}.linux64-opt"
   fi
-  ${WGET} -O ${TASKID_FILE} "${TASKID_URL}"
+  download_json "${TASKID_FILE}" "${TASKID_URL}"
   INDEX_TASK_ID="$($JQ -r '.taskId' ${TASKID_FILE})"
-  if [ -z "${INDEX_TASK_ID}" ]; then
+  if [ -z "${INDEX_TASK_ID}" ] || [ "${INDEX_TASK_ID}" == "null" ]; then
     echo "Failed to look up taskId at ${TASKID_URL}"
     exit 22
   else
@@ -247,17 +289,15 @@ function download_shared_artifacts_from_tc {
 
   TASKSTATUS_FILE="taskstatus.json"
   STATUS_URL="$queue_base/task/${INDEX_TASK_ID}/status"
-  ${WGET} -O "${TASKSTATUS_FILE}" "${STATUS_URL}"
+  download_json "${TASKSTATUS_FILE}" "${STATUS_URL}"
   LAST_RUN_INDEX=$(($(jq '.status.runs | length' ${TASKSTATUS_FILE}) - 1))
   echo "INFO: Examining run number ${LAST_RUN_INDEX}"
 
   BROWSER_ARCHIVE_URL="$queue_base/task/${INDEX_TASK_ID}/runs/${LAST_RUN_INDEX}/artifacts/public/build/${BROWSER_ARCHIVE}"
-  echo "INFO: ${WGET} ${BROWSER_ARCHIVE_URL}"
-  ${WGET} "${BROWSER_ARCHIVE_URL}"
+  download_file "${BROWSER_ARCHIVE}" "${BROWSER_ARCHIVE_URL}"
 
   TESTS_ARCHIVE_URL="$queue_base/task/${INDEX_TASK_ID}/runs/${LAST_RUN_INDEX}/artifacts/public/build/${TESTS_ARCHIVE}"
-  echo "INFO: ${WGET} ${TESTS_ARCHIVE_URL}"
-  ${WGET} "${TESTS_ARCHIVE_URL}"
+  download_file "${TESTS_ARCHIVE}" "${TESTS_ARCHIVE_URL}"
 }
 
 function unpack_artifacts {
@@ -275,7 +315,7 @@ function unpack_artifacts {
   ${UNPACK_CMD} "${BROWSER_ARCHIVE}"
   mkdir -p tests
   cd tests
-  ${UNTAR} "../${TESTS_ARCHIVE}"
+  ${UNPACK_CMD} "../${TESTS_ARCHIVE}"
   cd "${BASEDIR}"
   cp tests/bin/xpcshell "${PRODUCT}"
 }
@@ -289,14 +329,8 @@ function compare_hsts_files {
   HSTS_PRELOAD_INC_HG="${HGREPO}/raw-file/default/security/manager/ssl/$(basename "${HSTS_PRELOAD_INC_OLD}")"
 
   echo "INFO: Downloading existing include file..."
-  rm -rf "${HSTS_PRELOAD_ERRORS}" "${HSTS_PRELOAD_INC_OLD}"
-  echo "INFO: ${WGET} ${HSTS_PRELOAD_INC_HG}"
-  ${WGET} -O "${HSTS_PRELOAD_INC_OLD}" "${HSTS_PRELOAD_INC_HG}"
-
-  if [ ! -f "${HSTS_PRELOAD_INC_OLD}" ]; then
-    echo "Downloaded file '${HSTS_PRELOAD_INC_OLD}' not found in directory '$(pwd)' - this should have been downloaded above from ${HSTS_PRELOAD_INC_HG}." >&2
-    exit 41
-  fi
+  rm -rf "${HSTS_PRELOAD_ERRORS}"
+  download_file "${HSTS_PRELOAD_INC_OLD}" "${HSTS_PRELOAD_INC_HG}"
 
   # Run the script to get an updated preload list.
   echo "INFO: Generating new HSTS preload list..."
@@ -334,8 +368,8 @@ function compare_hpkp_files {
   HPKP_PRELOAD_OUTPUT_HG="${HGREPO}/raw-file/default/security/manager/ssl/${HPKP_PRELOAD_INC}"
 
   rm -f "${HPKP_PRELOAD_OUTPUT}"
-  ${WGET} -O "${HPKP_PRELOAD_INPUT}" "${HPKP_PRELOAD_OUTPUT_HG}"
-  ${WGET} -O "${HPKP_PRELOAD_JSON}" "${HPKP_PRELOAD_JSON_HG}"
+  download_file "${HPKP_PRELOAD_INPUT}" "${HPKP_PRELOAD_OUTPUT_HG}" kPreloadPKPinsExpirationTime
+  download_file "${HPKP_PRELOAD_JSON}" "${HPKP_PRELOAD_JSON_HG}" '"entries"'
 
   # Run the script to get an updated preload list.
   echo "INFO: Generating new HPKP preload list..."
@@ -383,16 +417,11 @@ function compare_suffix_lists {
   HG_SUFFIX_URL="${HGREPO}/raw-file/default/${HG_SUFFIX_PATH}"
   cd "${BASEDIR}"
 
-  echo "INFO: ${WGET} -O ${PUBLIC_SUFFIX_LOCAL} ${PUBLIC_SUFFIX_URL}"
-  rm -f "${PUBLIC_SUFFIX_LOCAL}"
-  ${WGET} -O "${PUBLIC_SUFFIX_LOCAL}" "${PUBLIC_SUFFIX_URL}"
-
-  echo "INFO: ${WGET} -O ${HG_SUFFIX_LOCAL} ${HG_SUFFIX_URL}"
-  rm -f "${HG_SUFFIX_LOCAL}"
-  ${WGET} -O "${HG_SUFFIX_LOCAL}" "${HG_SUFFIX_URL}"
+  download_file "${PUBLIC_SUFFIX_LOCAL}" "${PUBLIC_SUFFIX_URL}" "${PUBLIC_SUFFIX_END_MARKER}"
+  download_file "${HG_SUFFIX_LOCAL}" "${HG_SUFFIX_URL}" "${PUBLIC_SUFFIX_END_MARKER}"
 
   echo "INFO: diffing in-tree suffix list against the suffix list from publicsuffix.org"
-  ${DIFF} ${PUBLIC_SUFFIX_LOCAL} ${HG_SUFFIX_LOCAL} | tee "${SUFFIX_LIST_DIFF_ARTIFACT}"
+  ${DIFF} ${HG_SUFFIX_LOCAL} ${PUBLIC_SUFFIX_LOCAL} | tee "${SUFFIX_LIST_DIFF_ARTIFACT}"
   if [ -s "${SUFFIX_LIST_DIFF_ARTIFACT}" ]
   then
     return 0
@@ -403,13 +432,22 @@ function compare_suffix_lists {
 function compare_remote_settings_files {
   # cd "${TOPSRCDIR}"
 
-  REMOTE_SETTINGS_SERVER="https://firefox.settings.services.mozilla.com/v1"
+  REMOTE_SETTINGS_SERVER="https://firefox.settings.services.mozilla.com/v2"
 
   # 1. List remote settings collections from server.
   echo "INFO: fetch remote settings list from server"
-  ${WGET} -qO- "${REMOTE_SETTINGS_SERVER}/buckets/monitor/collections/changes/records" |\
-    ${JQ} -r '.data[] | .bucket+"/"+.collection+"/"+(.last_modified|tostring)' |\
-    # 2. For each entry ${bucket, collection, last_modified}
+  changes_lines="$(
+    ${WGET} -O- \
+      "${REMOTE_SETTINGS_SERVER}/buckets/monitor/collections/changes/changeset?_expected=0" |
+        ${JQ} -r '.changes[] | .bucket+"/"+.collection+"/"+(.last_modified|tostring)'
+  )"
+  line_count="$(printf '%s\n' "${changes_lines}" | wc -l | xargs)"
+  if [ "${line_count}" -le 1 ]; then
+    echo "ERROR: no changes pulled from server" >&2
+    exit 15
+  fi
+
+  # 2. For each entry ${bucket, collection, last_modified}
   while IFS="/" read -r bucket collection last_modified; do
 
     # 3. Check to see if the collection exists in the dump directory of the repository,
@@ -422,13 +460,14 @@ function compare_remote_settings_files {
     # 4. Download server version into REMOTE_SETTINGS_DIR folder
     remote_records_url="$REMOTE_SETTINGS_SERVER/buckets/${bucket}/collections/${collection}/changeset?_expected=${last_modified}"
     local_location_output="$REMOTE_SETTINGS_DIR/${bucket}/${collection}.json"
+    download_json "${BASEDIR}/changeset.json" "${remote_records_url}"
 
     # We sort both the keys and the records in search-config-v2 to make it
     # easier to read and to experiment with making changes via the dump file.
     if [ "${collection}" = "search-config-v2" ]; then
-      ${WGET} -qO- "$remote_records_url" | ${JQ} --sort-keys '{"data": .changes | sort_by(.recordType, .identifier), "timestamp": .timestamp}' > "${local_location_output}"
+      ${JQ} --sort-keys '{"data": .changes | sort_by(.recordType, .identifier), "timestamp": .timestamp}' < "${BASEDIR}/changeset.json" > "${local_location_output}"
     else
-      ${WGET} -qO- "$remote_records_url" | ${JQ} '{"data": .changes, "timestamp": .timestamp}' > "${local_location_output}"
+      ${JQ} '{"data": .changes, "timestamp": .timestamp}' < "${BASEDIR}/changeset.json" > "${local_location_output}"
     fi
 
     # 5. Download attachments if needed.
@@ -453,10 +492,10 @@ function compare_remote_settings_files {
         # We do not want quotes around ${id}
         # shellcheck disable=SC2086
         update_remote_settings_attachment "${bucket}" "${collection}" ${id} ".[] | select(.id == \"${id}\")"
-      done
+      done || exit $?
     fi
     # NOTE: The downloaded data is not validated. xpcshell should be used for that.
-    
+
     # bug 1959683: remote settings update can add untracked search-config-icons
     # It is not safe to take these (see https://bugzilla.mozilla.org/show_bug.cgi?id=1873448)
     # If they are around as untracked files when `arc diff` runs, that command will fail.
@@ -467,7 +506,7 @@ function compare_remote_settings_files {
     else
       ${HG} --cwd "${TOPSRCDIR}" purge services/settings/dumps/main/search-config-icons
     fi
-  done
+  done <<< "${changes_lines}"
 
   echo "INFO: diffing old/new remote settings dumps..."
   create_repo_diff "${REMOTE_SETTINGS_DIR}" "${REMOTE_SETTINGS_DIFF_ARTIFACT}"
@@ -506,24 +545,30 @@ function update_remote_settings_attachment() {
     return
   fi
   # Metadata changed. Download attachments.
-
-  # Save the metadata.
-  ${JQ} -cj <"${source_collection_location}" "${jq_attachment_selector}" > "${meta_file}"
+  local new_meta_file="${BASEDIR}/attachment.meta.json.tmp"
+  local new_attachment_file="${BASEDIR}/attachment.tmp"
+  ${JQ} -cj <"${source_collection_location}" "${jq_attachment_selector}" > "${new_meta_file}"
 
   echo "INFO: Downloading updated remote settings dump: ${bucket}/${collection}/${attachment_id}"
 
   if [ -z "${ATTACHMENT_BASE_URL}" ] ; then
-    ATTACHMENT_BASE_URL=$(${WGET} -qO- "${REMOTE_SETTINGS_SERVER}" | ${JQ} -r .capabilities.attachments.base_url)
+    download_json "${BASEDIR}/server-info.json" "${REMOTE_SETTINGS_SERVER}"
+    ATTACHMENT_BASE_URL=$(${JQ} -r .capabilities.attachments.base_url < "${BASEDIR}/server-info.json")
   fi
-  attachment_path_from_meta=$(${JQ} -r < "${meta_file}" .attachment.location)
-  ${WGET} -qO "${REMOTE_SETTINGS_DIR}/${path_to_attachment}" "${ATTACHMENT_BASE_URL}${attachment_path_from_meta}"
+  attachment_path_from_meta=$(${JQ} -r < "${new_meta_file}" .attachment.location)
+  if ! fetch_file "${new_attachment_file}" "${ATTACHMENT_BASE_URL}${attachment_path_from_meta}"; then
+    echo "WARNING: skipping ${path_to_attachment}, the in-tree copy (if any) is unchanged" >&2
+    rm -f "${new_meta_file}" "${new_attachment_file}"
+    return 0
+  fi
+  mv "${new_attachment_file}" "${REMOTE_SETTINGS_DIR}/${path_to_attachment}"
+  mv "${new_meta_file}" "${meta_file}"
 }
 
 function compare_mobile_experiments() {
-  echo "INFO ${WGET} ${EXPERIMENTER_URL}"
-  ${WGET} -O experiments.json "${EXPERIMENTER_URL}"
-  ${WGET} -O fenix-experiments-old.json "${HGREPO}/raw-file/default/${FENIX_INITIAL_EXPERIMENTS}"
-  ${WGET} -O focus-experiments-old.json "${HGREPO}/raw-file/default/${FOCUS_INITIAL_EXPERIMENTS}"
+  download_json experiments.json "${EXPERIMENTER_URL}"
+  download_json fenix-experiments-old.json "${HGREPO}/raw-file/default/${FENIX_INITIAL_EXPERIMENTS}"
+  download_json focus-experiments-old.json "${HGREPO}/raw-file/default/${FOCUS_INITIAL_EXPERIMENTS}"
 
   # shellcheck disable=SC2016
   ${JQ} --arg APP_NAME fenix '{"data":map(select(.appName == $APP_NAME))}' < experiments.json > fenix-experiments-new.json
@@ -537,6 +582,17 @@ function compare_mobile_experiments() {
     # no change
     return 1
   fi
+}
+
+function update_mobile_merino_manifest() {
+  echo "INFO: Updating mobile merino manifest..."
+  "${TOPSRCDIR}"/mach python "${MOBILE_MERINO_MANIFEST_UPDATE_SCRIPT}"
+  status=$?
+
+  if [ $status -gt 1 ]; then
+    exit 70
+  fi
+  return $status
 }
 
 function update_ct_logs() {
@@ -598,10 +654,18 @@ function push_repo {
   then
     return 1
   fi
-  # Clean up older review requests
+  # Clean up older review requests of the same type as this run.
+  # Pinning updates (HSTS/HPKP) and periodic updates are separate tasks and
+  # must not abandon each other's patches.
   # Turn  Needs Review D624: No bug, Automated HSTS ...
   # into D624
-  for diff in $($ARC list | grep "Needs Review" | grep -E "${BRANCH} repo-update" | awk 'match($0, /D[0-9]+[^: ]/) { print substr($0, RSTART, RLENGTH)  }')
+  ALL_DIFFS=$($ARC list | grep "Needs Review" | grep -E "${BRANCH} repo-update" || true)
+  if [ "${DO_HSTS}" == "true" ] || [ "${DO_HPKP}" == "true" ]; then
+    OLDER_DIFFS=$(echo "${ALL_DIFFS}" | grep -E "HSTS|HPKP" || true)
+  else
+    OLDER_DIFFS=$(echo "${ALL_DIFFS}" | grep -vE "HSTS|HPKP" || true)
+  fi
+  for diff in $(echo "${OLDER_DIFFS}" | awk 'match($0, /D[0-9]+[^: ]/) { print substr($0, RSTART, RLENGTH)  }')
   do
     echo "Removing old request $diff"
     # There is no 'arc abandon', see bug 1452082
@@ -668,12 +732,18 @@ if [ "${DO_MOBILE_EXPERIMENTS}" == "true" ]; then
     MOBILE_EXPERIMENTS_UPDATED=true
   fi
 fi
+if [ "${DO_MOBILE_MERINO_MANIFEST}" == "true" ]; then
+  if update_mobile_merino_manifest
+  then
+    MOBILE_MERINO_MANIFEST_UPDATED=true
+  fi
+fi
 if [ "${DO_CT_LOGS}" == "true" ]; then
   update_ct_logs
 fi
 
 
-if [ "${HSTS_UPDATED}" == "false" ] && [ "${HPKP_UPDATED}" == "false" ] && [ "${REMOTE_SETTINGS_UPDATED}" == "false" ] && [ "${SUFFIX_LIST_UPDATED}" == "false" ] && [ "${MOBILE_EXPERIMENTS_UPDATED}" == "false" ] && [ "${DO_CT_LOGS}" == "false" ]; then
+if [ "${HSTS_UPDATED}" == "false" ] && [ "${HPKP_UPDATED}" == "false" ] && [ "${REMOTE_SETTINGS_UPDATED}" == "false" ] && [ "${SUFFIX_LIST_UPDATED}" == "false" ] && [ "${MOBILE_EXPERIMENTS_UPDATED}" == "false" ] && [ "${MOBILE_MERINO_MANIFEST_UPDATED}" == "false" ] && [ "${DO_CT_LOGS}" == "false" ]; then
   echo "INFO: no updates required. Exiting."
   exit 0
 else
@@ -711,6 +781,13 @@ if [ "${MOBILE_EXPERIMENTS_UPDATED}" == "true" ]
 then
   stage_mobile_experiments_files
   COMMIT_MESSAGE="${COMMIT_MESSAGE} mobile-experiments"
+fi
+
+if [ "${MOBILE_MERINO_MANIFEST_UPDATED}" == "true" ]
+then
+  # Merino manifest file is already updated in-place in the tree,
+  # so there's no need to stage them.
+  COMMIT_MESSAGE="${COMMIT_MESSAGE} mobile-merino-manifest"
 fi
 
 if [ "${DO_CT_LOGS}" == "true" ]

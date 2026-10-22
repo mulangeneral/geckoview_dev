@@ -8,11 +8,12 @@
 #include "MediaControlKeySource.h"
 #include "MediaEventSource.h"
 #include "MediaPlaybackStatus.h"
+#include "mozilla/Maybe.h"
+#include "mozilla/dom/AudioSessionBinding.h"
 #include "mozilla/dom/MediaMetadata.h"
 #include "mozilla/dom/MediaSessionBinding.h"
-#include "mozilla/Maybe.h"
-#include "nsTHashMap.h"
 #include "nsISupportsImpl.h"
+#include "nsTHashMap.h"
 
 namespace mozilla::dom {
 
@@ -71,11 +72,8 @@ class IMediaInfoUpdater {
   // (1) `eStart` MUST be the first state and `eStop` MUST be the last state
   // (2) Do not notify same state again
   // (3) `ePaused` can only be notified after notifying `ePlayed`.
-  // (4) `aIsVideo`: whether the notifying media is a video element
-  //     (meaningful for `ePlayed`/`ePaused` only).
   virtual void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                          MediaPlaybackState aState,
-                                          bool aIsVideo) = 0;
+                                          MediaPlaybackState aState) = 0;
 
   // Use this method to update the audible state of controlled media, and MUST
   // follow the following rules in which `audible` and `inaudible` should be a
@@ -85,8 +83,10 @@ class IMediaInfoUpdater {
   //     (X) `inaudible` -> `audible`    [notify `inaudible` before `audible`]
   //     (X) `audible` -> `audible`      [notify `audible` twice]
   //     (X) `audible` -> (media pauses) [forgot to notify `inaudible`]
-  virtual void NotifyMediaAudibleChanged(uint64_t aBrowsingContextId,
-                                         MediaAudibleState aState) = 0;
+  virtual void NotifyMediaAudibleChanged(
+      uint64_t aBrowsingContextId, MediaAudibleState aState,
+      ControlType aType = ControlType::eControllable,
+      AudioSessionType aSessionType = AudioSessionType::Playback) = 0;
 
   // Use this method to update media session's declared playback state for the
   // specific media session.
@@ -159,10 +159,11 @@ class MediaStatusManager : public IMediaInfoUpdater {
 
   // IMediaInfoUpdater's methods
   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                  MediaPlaybackState aState,
-                                  bool aIsVideo) override;
-  void NotifyMediaAudibleChanged(uint64_t aBrowsingContextId,
-                                 MediaAudibleState aState) override;
+                                  MediaPlaybackState aState) override;
+  void NotifyMediaAudibleChanged(
+      uint64_t aBrowsingContextId, MediaAudibleState aState,
+      ControlType aType = ControlType::eControllable,
+      AudioSessionType aSessionType = AudioSessionType::Playback) override;
   void SetDeclaredPlaybackState(uint64_t aSessionContextId,
                                 MediaSessionPlaybackState aState) override;
   void NotifySessionCreated(uint64_t aSessionContextId) override;
@@ -188,10 +189,20 @@ class MediaStatusManager : public IMediaInfoUpdater {
   // session doesn't exist or doesn't have any state, Nothing is returned.
   Maybe<PositionState> GetCurrentPositionState() const;
 
+  virtual void NotifyBrowsingContextDiscarded(uint64_t aBrowsingContextId);
+
   bool IsMediaAudible() const;
   bool IsMediaPlaying() const;
   bool IsAnyMediaBeingControlled() const;
-  bool IsAnyVideoMediaPlaying() const;
+
+  // Resolve the audio-session type for the given browsing context from its
+  // currently audible sources. Returns Ambient when the browsing context has
+  // no audible source.
+  AudioSessionType EffectiveTypeForBc(uint64_t aBrowsingContextId) const;
+
+  // Whether the given browsing context currently has at least one audible
+  // source. Used by MediaController to detect audibility transitions.
+  bool IsBcAudible(uint64_t aBrowsingContextId) const;
 
   // These events would be notified when the active media session's certain
   // property changes.
@@ -226,8 +237,9 @@ class MediaStatusManager : public IMediaInfoUpdater {
 
   uint64_t mTopLevelBrowsingContextId;
 
-  // Within a tab, the Id of the browsing context which has already created a
-  // media session and owns the audio focus within a tab.
+  // Within a tab, the Id of the browsing context whose registered media
+  // session is currently active for the tab. Derived from the active
+  // audible controllable context tracked on `mPlaybackStatusDelegate`.
   Maybe<uint64_t> mActiveMediaSessionContextId;
 
   void ClearActiveMediaSessionContextIdIfNeeded();
@@ -240,9 +252,9 @@ class MediaStatusManager : public IMediaInfoUpdater {
   bool IsInPrivateBrowsing() const;
   void FillMissingTitleAndArtworkIfNeeded(MediaMetadataBase& aMetadata) const;
 
-  bool IsSessionOwningAudioFocus(uint64_t aBrowsingContextId) const;
   void SetActiveMediaSessionContextId(uint64_t aBrowsingContextId);
-  void HandleAudioFocusOwnerChanged(Maybe<uint64_t>& aBrowsingContextId);
+  void HandleActiveAudibleControllableContextChanged(
+      Maybe<uint64_t>& aBrowsingContextId);
 
   void NotifySupportedKeysChangedIfNeeded(uint64_t aBrowsingContextId);
 

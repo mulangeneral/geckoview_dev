@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -134,6 +132,10 @@ void MacroAssembler::andPtr(Imm32 imm, Register src, Register dest) {
     movl(src, dest);
   }
   andl(imm, dest);
+}
+
+void MacroAssembler::andPtr(Imm32 imm, const Address& dest) {
+  andl(imm, Operand(dest));
 }
 
 void MacroAssembler::and64(Imm64 imm, Register64 dest) {
@@ -278,6 +280,10 @@ void MacroAssembler::subPtr(Register src, const Address& dest) {
 
 void MacroAssembler::subPtr(Imm32 imm, Register dest) { subl(imm, dest); }
 
+void MacroAssembler::subPtr(ImmWord imm, Register dest) {
+  subl(Imm32(imm.value), dest);
+}
+
 void MacroAssembler::subPtr(const Address& addr, Register dest) {
   subl(Operand(addr), dest);
 }
@@ -331,6 +337,10 @@ void MacroAssembler::mulHighUnsigned32(Imm32 imm, Register src, Register dest) {
 
 void MacroAssembler::mulPtr(Register rhs, Register srcDest) {
   imull(rhs, srcDest);
+}
+
+void MacroAssembler::mulPtr(ImmWord rhs, Register srcDest) {
+  imull(Imm32(rhs.value), srcDest);
 }
 
 // Note: this function clobbers eax and edx.
@@ -471,6 +481,19 @@ void MacroAssembler::lshift64(Imm32 imm, Register64 dest) {
   xorl(dest.low, dest.low);
 }
 
+void MacroAssembler::lshift64(Imm32 imm, Register64 src, Register64 dest) {
+  MOZ_ASSERT(0 <= imm.value && imm.value < 64);
+  MOZ_ASSERT(dest.low != src.high);
+  if (src.low != dest.low) {
+    movl(src.low, dest.low);
+  }
+  if (src.high != dest.high) {
+    movl(src.high, dest.high);
+  }
+
+  lshift64(imm, dest);
+}
+
 void MacroAssembler::lshift64(Register shift, Register64 srcDest) {
   MOZ_ASSERT(shift == ecx);
   MOZ_ASSERT(srcDest.low != ecx && srcDest.high != ecx);
@@ -517,6 +540,19 @@ void MacroAssembler::rshift64(Imm32 imm, Register64 dest) {
   movl(dest.high, dest.low);
   shrl(Imm32(imm.value & 0x1f), dest.low);
   xorl(dest.high, dest.high);
+}
+
+void MacroAssembler::rshift64(Imm32 imm, Register64 src, Register64 dest) {
+  MOZ_ASSERT(0 <= imm.value && imm.value < 64);
+  MOZ_ASSERT(dest.low != src.high);
+  if (src.low != dest.low) {
+    movl(src.low, dest.low);
+  }
+  if (src.high != dest.high) {
+    movl(src.high, dest.high);
+  }
+
+  rshift64(imm, dest);
 }
 
 void MacroAssembler::rshift64(Register shift, Register64 srcDest) {
@@ -567,6 +603,20 @@ void MacroAssembler::rshift64Arithmetic(Imm32 imm, Register64 dest) {
   movl(dest.high, dest.low);
   sarl(Imm32(imm.value & 0x1f), dest.low);
   sarl(Imm32(0x1f), dest.high);
+}
+
+void MacroAssembler::rshift64Arithmetic(Imm32 imm, Register64 src,
+                                        Register64 dest) {
+  MOZ_ASSERT(0 <= imm.value && imm.value < 64);
+  MOZ_ASSERT(dest.low != src.high);
+  if (src.low != dest.low) {
+    movl(src.low, dest.low);
+  }
+  if (src.high != dest.high) {
+    movl(src.high, dest.high);
+  }
+
+  rshift64Arithmetic(imm, dest);
 }
 
 void MacroAssembler::rshift64Arithmetic(Register shift, Register64 srcDest) {
@@ -1073,6 +1123,21 @@ void MacroAssembler::branchTestMagic(Condition cond, const Address& valaddr,
   bind(&notMagic);
 }
 
+void MacroAssembler::branchTestMagic(Condition cond, const BaseIndex& valaddr,
+                                     JSWhyMagic why, Label* label) {
+  MOZ_ASSERT(cond == Assembler::Equal || cond == Assembler::NotEqual);
+
+  Label notMagic;
+  if (cond == Assembler::Equal) {
+    branchTestMagic(Assembler::NotEqual, valaddr, &notMagic);
+  } else {
+    branchTestMagic(Assembler::NotEqual, valaddr, label);
+  }
+
+  branch32(cond, ToPayload(valaddr), Imm32(why), label);
+  bind(&notMagic);
+}
+
 template <typename T>
 void MacroAssembler::branchTestValue(Condition cond, const T& lhs,
                                      const ValueOperand& rhs, Label* label) {
@@ -1342,12 +1407,70 @@ void MacroAssembler::fallibleUnboxPtr(const BaseIndex& src, Register dest,
   fallibleUnboxPtrImpl(src, dest, type, fail);
 }
 
+void MacroAssembler::min32(Register lhs, Register rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ false);
+}
+
+void MacroAssembler::min32(Register lhs, Imm32 rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ false);
+}
+
+void MacroAssembler::max32(Register lhs, Register rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ true);
+}
+
+void MacroAssembler::max32(Register lhs, Imm32 rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ true);
+}
+
+void MacroAssembler::minPtr(Register lhs, Register rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ false);
+}
+
+void MacroAssembler::minPtr(Register lhs, ImmWord rhs, Register dest) {
+  minMax32(lhs, Imm32(rhs.value), dest, /* isMax = */ false);
+}
+
+void MacroAssembler::maxPtr(Register lhs, Register rhs, Register dest) {
+  minMax32(lhs, rhs, dest, /* isMax = */ true);
+}
+
+void MacroAssembler::maxPtr(Register lhs, ImmWord rhs, Register dest) {
+  minMax32(lhs, Imm32(rhs.value), dest, /* isMax = */ true);
+}
+
 //}}} check_macroassembler_style
 // ===============================================================
 
-// Note: this function clobbers the source register.
 void MacroAssemblerX86::convertUInt32ToDouble(Register src,
                                               FloatRegister dest) {
+  ScratchDoubleScope fpscratch(asMasm());
+
+  // Load 0x1p52 with all high words zeroed in preparation for a bit-or.
+  //
+  // Setting any bits in the significand component will yield an integral
+  // number, because 0x1p52 doesn't have any bits available to represent
+  // fractional digits.
+  loadConstantDoubleZeroHighWord(0x1p52, fpscratch);
+
+  // Move |src| from GPR to xmm register.
+  vmovd(src, dest);
+
+  // |dest| now contains `0x1p52 + double(src)`.
+  vpor(fpscratch, dest, dest);
+
+  // Subtract `0x1p52` to obtain `double(src)`.
+  vsubsd(fpscratch, dest, dest);
+}
+
+void MacroAssemblerX86::convertUInt32ToFloat32(Register src,
+                                               FloatRegister dest) {
+  convertUInt32ToDouble(src, dest);
+  convertDoubleToFloat32(dest, dest);
+}
+
+void MacroAssemblerX86::convertUInt32ToDouble(Register src,
+                                              const ScratchDoubleScope& dest) {
   // src is [0, 2^32-1]
   subl(Imm32(0x80000000), src);
 
@@ -1357,13 +1480,6 @@ void MacroAssemblerX86::convertUInt32ToDouble(Register src,
   // dest is now a double with the int range.
   // correct the double value by adding 0x80000000.
   asMasm().addConstantDouble(2147483648.0, dest);
-}
-
-// Note: this function clobbers the source register.
-void MacroAssemblerX86::convertUInt32ToFloat32(Register src,
-                                               FloatRegister dest) {
-  convertUInt32ToDouble(src, dest);
-  convertDoubleToFloat32(dest, dest);
 }
 
 void MacroAssemblerX86::unboxValue(const ValueOperand& src, AnyRegister dest,

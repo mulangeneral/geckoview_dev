@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -15,8 +13,8 @@
 using namespace mozilla;
 using namespace mozilla::dom;
 
-MOZ_RUNINIT static nsCOMPtr<nsIPrincipal> selfURIPrincipal;
-MOZ_RUNINIT static nsCOMPtr<nsIURI> selfURI;
+constinit static nsCOMPtr<nsIPrincipal> selfURIPrincipal;
+constinit static nsCOMPtr<nsIURI> selfURI;
 
 static int LVVMFuzzerInitTest(int* argc, char*** argv) {
   nsresult ret;
@@ -43,8 +41,8 @@ static int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   NS_ConvertASCIItoUTF16 policy(reinterpret_cast<const char*>(data), size);
   if (!policy.get()) return 0;
 
-  FeaturePolicyParser::ParseString(policy, nullptr, selfURIPrincipal,
-                                   selfURIPrincipal, parsedFeatures);
+  FeaturePolicyParser::ParsePolicyFromAttribute(
+      policy, nullptr, selfURIPrincipal, selfURIPrincipal, parsedFeatures);
 
   for (const Feature& feature : parsedFeatures) {
     nsTArray<nsCOMPtr<nsIPrincipal>> list;

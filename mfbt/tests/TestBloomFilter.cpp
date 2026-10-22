@@ -1,15 +1,13 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include "mozilla/Assertions.h"
 #include "mozilla/BloomFilter.h"
 #include "mozilla/UniquePtr.h"
-
-#include <stddef.h>
-#include <stdint.h>
 
 using mozilla::BitBloomFilter;
 using mozilla::CountingBloomFilter;
@@ -25,8 +23,7 @@ class FilterChecker {
 };
 
 void testBitBloomFilter() {
-  const mozilla::UniquePtr filter =
-      mozilla::MakeUnique<BitBloomFilter<12, FilterChecker>>();
+  const auto filter = mozilla::MakeUnique<BitBloomFilter<12, FilterChecker>>();
   MOZ_RELEASE_ASSERT(filter);
 
   FilterChecker one(1);
@@ -53,7 +50,7 @@ void testBitBloomFilter() {
 }
 
 void testCountingBloomFilter() {
-  const mozilla::UniquePtr filter =
+  const auto filter =
       mozilla::MakeUnique<CountingBloomFilter<12, FilterChecker>>();
   MOZ_RELEASE_ASSERT(filter);
 

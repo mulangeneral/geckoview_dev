@@ -3,16 +3,12 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 import { CardGrid } from "content-src/components/DiscoveryStreamComponents/CardGrid/CardGrid";
-import { CollectionCardGrid } from "content-src/components/DiscoveryStreamComponents/CollectionCardGrid/CollectionCardGrid";
 import { CollapsibleSection } from "content-src/components/CollapsibleSection/CollapsibleSection";
 import { connect } from "react-redux";
-import { DSMessage } from "content-src/components/DiscoveryStreamComponents/DSMessage/DSMessage";
-import { DSPrivacyModal } from "content-src/components/DiscoveryStreamComponents/DSPrivacyModal/DSPrivacyModal";
 import { ReportContent } from "../DiscoveryStreamComponents/ReportContent/ReportContent";
-import { DSSignup } from "content-src/components/DiscoveryStreamComponents/DSSignup/DSSignup";
-import { DSTextPromo } from "content-src/components/DiscoveryStreamComponents/DSTextPromo/DSTextPromo";
 import { Highlights } from "content-src/components/DiscoveryStreamComponents/Highlights/Highlights";
 import { HorizontalRule } from "content-src/components/DiscoveryStreamComponents/HorizontalRule/HorizontalRule";
+// eslint-disable-next-line no-shadow
 import { Navigation } from "content-src/components/DiscoveryStreamComponents/Navigation/Navigation";
 import { PrivacyLink } from "content-src/components/DiscoveryStreamComponents/PrivacyLink/PrivacyLink";
 import React from "react";
@@ -20,6 +16,23 @@ import { SectionTitle } from "content-src/components/DiscoveryStreamComponents/S
 import { selectLayoutRender } from "content-src/lib/selectLayoutRender";
 import { TopSites } from "content-src/components/TopSites/TopSites";
 import { CardSections } from "../DiscoveryStreamComponents/CardSections/CardSections";
+import { Widgets } from "content-src/components/Widgets/Widgets";
+import { Spaces } from "content-src/components/Spaces/Spaces";
+import {
+  isSpacesActive,
+  resolvePopulatedSpaces,
+  SPACE_IDS,
+} from "common/PageLayoutVariants.mjs";
+import {
+  ASROUTER_NEWTAB_MESSAGE_POSITIONS,
+  shouldShowASRouterNewTabMessage,
+} from "../../lib/asrouter-message-utils.mjs";
+import { ErrorBoundary } from "content-src/components/ErrorBoundary/ErrorBoundary";
+import { MessageWrapper } from "content-src/components/MessageWrapper/MessageWrapper";
+import { ExternalComponentWrapper } from "content-src/components/ExternalComponentWrapper/ExternalComponentWrapper";
+
+// @nova-cleanup(remove-pref): Remove PREF_NOVA_ENABLED
+const PREF_NOVA_ENABLED = "nova.enabled";
 
 const ALLOWED_CSS_URL_PREFIXES = [
   "chrome://",
@@ -117,38 +130,15 @@ export class _DiscoveryStreamBase extends React.PureComponent {
       case "Highlights":
         return <Highlights />;
       case "TopSites":
+        // @nova-cleanup(remove-conditional): Remove this guard when DiscoveryStreamBase
+        // is no longer used in the Nova layout
+        if (this.props.Prefs.values[PREF_NOVA_ENABLED]) {
+          return null;
+        }
         return (
           <div className="ds-top-sites">
             <TopSites isFixed={true} title={component.header?.title} />
           </div>
-        );
-      case "TextPromo":
-        return (
-          <DSTextPromo
-            dispatch={this.props.dispatch}
-            type={component.type}
-            data={component.data}
-          />
-        );
-      case "Signup":
-        return (
-          <DSSignup
-            dispatch={this.props.dispatch}
-            type={component.type}
-            data={component.data}
-          />
-        );
-      case "Message":
-        return (
-          <DSMessage
-            title={component.header && component.header.title}
-            subtitle={component.header && component.header.subtitle}
-            link_text={component.header && component.header.link_text}
-            link_url={component.header && component.header.link_url}
-            icon={component.header && component.header.icon}
-            essentialReadsHeader={component.essentialReadsHeader}
-            editorsPicksHeader={component.editorsPicksHeader}
-          />
         );
       case "SectionTitle":
         return <SectionTitle header={component.header} />;
@@ -166,21 +156,6 @@ export class _DiscoveryStreamBase extends React.PureComponent {
             privacyNoticeURL={component.properties.privacyNoticeURL}
           />
         );
-      case "CollectionCardGrid": {
-        const { DiscoveryStream } = this.props;
-        return (
-          <CollectionCardGrid
-            data={component.data}
-            feed={component.feed}
-            spocs={DiscoveryStream.spocs}
-            placement={component.placement}
-            type={component.type}
-            items={component.properties.items}
-            dismissible={this.props.DiscoveryStream.isCollectionDismissible}
-            dispatch={this.props.dispatch}
-          />
-        );
-      }
       case "CardGrid": {
         const sectionsEnabled =
           this.props.Prefs.values["discoverystream.sections.enabled"];
@@ -191,11 +166,9 @@ export class _DiscoveryStreamBase extends React.PureComponent {
               data={component.data}
               dispatch={this.props.dispatch}
               type={component.type}
-              firstVisibleTimestamp={this.props.firstVisibleTimestamp}
-              is_collection={true}
               ctaButtonSponsors={component.properties.ctaButtonSponsors}
               ctaButtonVariant={component.properties.ctaButtonVariant}
-              spocMessageVariant={component.properties.spocMessageVariant}
+              spocsLoading={this.props.spocsLoading}
             />
           );
         }
@@ -212,16 +185,11 @@ export class _DiscoveryStreamBase extends React.PureComponent {
             hideCardBackground={component.properties.hideCardBackground}
             fourCardLayout={component.properties.fourCardLayout}
             compactGrid={component.properties.compactGrid}
-            essentialReadsHeader={component.properties.essentialReadsHeader}
-            onboardingExperience={component.properties.onboardingExperience}
             ctaButtonSponsors={component.properties.ctaButtonSponsors}
             ctaButtonVariant={component.properties.ctaButtonVariant}
-            spocMessageVariant={component.properties.spocMessageVariant}
-            editorsPicksHeader={component.properties.editorsPicksHeader}
-            recentSavesEnabled={this.props.DiscoveryStream.recentSavesEnabled}
             hideDescriptions={this.props.DiscoveryStream.hideDescriptions}
-            firstVisibleTimestamp={this.props.firstVisibleTimestamp}
             spocPositions={component.spocs?.positions}
+            placeholder={this.props.spocsLoading}
           />
         );
       }
@@ -229,6 +197,8 @@ export class _DiscoveryStreamBase extends React.PureComponent {
         return <HorizontalRule />;
       case "PrivacyLink":
         return <PrivacyLink properties={component.properties} />;
+      case "Widgets":
+        return <Widgets />;
       default:
         return <div>{component.type}</div>;
     }
@@ -242,26 +212,27 @@ export class _DiscoveryStreamBase extends React.PureComponent {
   }
 
   render() {
-    const { locale, mayHaveSponsoredStories } = this.props;
-    // Select layout render data by adding spocs and position to recommendations
+    const { locale } = this.props;
+    // Bug 1980459 - Note that selectLayoutRender acts as a selector that transforms layout data based on current
+    // preferences and experiment flags. It runs after Redux state is populated but before render.
+    // Components removed in selectLayoutRender (e.g., Widgets or TopSites) will not appear in the
+    // layoutRender result, and therefore will not be rendered here regardless of logic below.
+
+    // Select layout renders data by adding spocs and position to recommendations
     const { layoutRender } = selectLayoutRender({
       state: this.props.DiscoveryStream,
       prefs: this.props.Prefs.values,
       locale,
     });
+    // @nova-cleanup(remove-pref): Delete this line; remove all !novaEnabled guards on ASRouterNewTabMessage blocks below.
+    const novaEnabled = this.props.Prefs.values[PREF_NOVA_ENABLED];
     const sectionsEnabled =
       this.props.Prefs.values["discoverystream.sections.enabled"];
-    const { config } = this.props.DiscoveryStream;
     const topicSelectionEnabled =
       this.props.Prefs.values["discoverystream.topicSelection.enabled"];
     const reportAdsEnabled =
       this.props.Prefs.values["discoverystream.reportAds.enabled"];
     const spocsEnabled = this.props.Prefs.values["unifiedAds.spocs.enabled"];
-
-    // Allow rendering without extracting special components
-    if (!config.collapsible) {
-      return this.renderLayout(layoutRender);
-    }
 
     // Find the first component of a type and remove it from layout
     const extractComponent = type => {
@@ -290,7 +261,20 @@ export class _DiscoveryStreamBase extends React.PureComponent {
 
     // Extract TopSites to render before the rest and Message to use for header
     const topSites = extractComponent("TopSites");
-    const sponsoredCollection = extractComponent("CollectionCardGrid");
+
+    // There are two ways to enable widgets:
+    // Via `widgets.system.*` prefs or Nimbus experiment
+    const widgetsNimbusTrainhopEnabled =
+      this.props.Prefs.values.trainhopConfig?.widgets?.enabled;
+    const widgetsNimbusEnabled = this.props.Prefs.values.widgetsConfig?.enabled;
+    const widgetsSystemPrefsEnabled =
+      this.props.Prefs.values["widgets.system.enabled"];
+
+    const widgets =
+      widgetsNimbusTrainhopEnabled ||
+      widgetsNimbusEnabled ||
+      widgetsSystemPrefsEnabled;
+
     const message = extractComponent("Message") || {
       header: {
         link_text: topStories.learnMore.link.message,
@@ -300,6 +284,11 @@ export class _DiscoveryStreamBase extends React.PureComponent {
     };
 
     const privacyLinkComponent = extractComponent("PrivacyLink");
+    // renderLayout always returns a div, so gate on the same condition
+    // Highlights.jsx uses or the side-by-side panel frames an empty box.
+    const hasHighlights = Boolean(
+      this.props.Sections?.find(s => s.id === "highlights")?.enabled
+    );
     let learnMore = {
       link: {
         href: message.header.link_url,
@@ -309,46 +298,32 @@ export class _DiscoveryStreamBase extends React.PureComponent {
     let sectionTitle = message.header.title;
     let subTitle = "";
 
-    // If we're in one of these experiments, override the default message.
-    // For now this is English only.
-    if (message.essentialReadsHeader || message.editorsPicksHeader) {
-      learnMore = null;
-      subTitle = "Recommended By Pocket";
-      if (message.essentialReadsHeader) {
-        sectionTitle = "Today’s Essential Reads";
-      } else if (message.editorsPicksHeader) {
-        sectionTitle = "Editor’s Picks";
-      }
-    }
-
     const { DiscoveryStream } = this.props;
 
-    return (
-      <React.Fragment>
-        {this.props.DiscoveryStream.isPrivacyInfoModalVisible && (
-          <DSPrivacyModal dispatch={this.props.dispatch} />
-        )}
+    // Widgets, the content feed and Highlights are already three separate boxes
+    // in this band, so spaces navigates between those rather than introducing a
+    // new grouping. Declared here so the flat band and Spaces can each place
+    // them.
+    const widgetsGroup =
+      widgets &&
+      this.renderLayout([
+        {
+          width: 12,
+          components: [{ type: "Widgets" }],
+          sectionType: "widgets",
+        },
+      ]);
 
-        {/* Reporting stories/articles will only be available in sections, not the default card grid  */}
-        {((reportAdsEnabled && spocsEnabled) || sectionsEnabled) && (
-          <ReportContent spocs={DiscoveryStream.spocs} />
-        )}
+    const contentGroup = (
+      <div
+        className={`layout-content-column${
+          layoutRender.length ? " has-feed" : ""
+        }`}
+      >
+        {/* Nova only: the ABOVE_CONTENT_FEED message, built in Base.jsx. This is
+        the widgets/feed boundary, which only exists inside this component. */}
+        {this.props.aboveContentFeed}
 
-        {topSites &&
-          this.renderLayout([
-            {
-              width: 12,
-              components: [topSites],
-              sectionType: "topsites",
-            },
-          ])}
-        {sponsoredCollection &&
-          this.renderLayout([
-            {
-              width: 12,
-              components: [sponsoredCollection],
-            },
-          ])}
         {!!layoutRender.length && (
           <CollapsibleSection
             className="ds-layout"
@@ -361,21 +336,13 @@ export class _DiscoveryStreamBase extends React.PureComponent {
             showPrefName={topStories.pref.feed}
             title={sectionTitle}
             subTitle={subTitle}
-            mayHaveSponsoredStories={mayHaveSponsoredStories}
             mayHaveTopicsSelection={topicSelectionEnabled}
             sectionsEnabled={sectionsEnabled}
-            spocMessageVariant={message?.properties?.spocMessageVariant}
             eventSource="CARDGRID"
           >
             {this.renderLayout(layoutRender)}
           </CollapsibleSection>
         )}
-        {this.renderLayout([
-          {
-            width: 12,
-            components: [{ type: "Highlights" }],
-          },
-        ])}
         {privacyLinkComponent &&
           this.renderLayout([
             {
@@ -383,6 +350,111 @@ export class _DiscoveryStreamBase extends React.PureComponent {
               components: [privacyLinkComponent],
             },
           ])}
+      </div>
+    );
+
+    const highlightsGroup = hasHighlights && (
+      <div className="layout-highlights-column">
+        {this.renderLayout([
+          {
+            width: 12,
+            components: [{ type: "Highlights" }],
+          },
+        ])}
+      </div>
+    );
+
+    // Guarded so the ordinary layout does no spaces work at all: isSpacesActive
+    // reads prefs only. resolvePopulatedSpaces then decides which spaces exist
+    // and their tablist order, so the tabs follow the prefs rather than whatever
+    // the feeds have delivered so far.
+    let spaceEntries = [];
+    if (isSpacesActive(this.props.Prefs.values)) {
+      const spaceContent = {
+        [SPACE_IDS.STORIES]: contentGroup,
+        [SPACE_IDS.WIDGETS]: widgetsGroup,
+        [SPACE_IDS.ACTIVITY]: highlightsGroup,
+      };
+      spaceEntries = resolvePopulatedSpaces(this.props.Prefs.values)
+        .map(id => ({ id, content: spaceContent[id] }))
+        .filter(space => space.content);
+    }
+    const spacesActive = spaceEntries.length > 1;
+
+    return (
+      <React.Fragment>
+        {/* Reporting stories/articles will only be available in sections, not the default card grid  */}
+        {((reportAdsEnabled && spocsEnabled) || sectionsEnabled) && (
+          <ReportContent spocs={DiscoveryStream.spocs} />
+        )}
+
+        {/**
+         * The ABOVE_TOPSITES ASRouterNewTabMessage rendering actually occurs in Base.jsx
+         * for silly reasons. Essentially, it's easier for the browser_asrouter_newtab_message
+         * mochitest-browser test to render a test message if it doesn't have to rely on
+         * DiscoveryStreamBase being rendered. Thankfully, this can all be removed
+         * after Nova ships.
+         */}
+
+        {topSites &&
+          this.renderLayout([
+            {
+              width: 12,
+              components: [topSites],
+              sectionType: "topsites",
+            },
+          ])}
+
+        {
+          // @nova-cleanup(remove-conditional): Remove this entire block; Base.jsx handles ABOVE_WIDGETS in the Nova layout.
+        }
+        {!novaEnabled &&
+          shouldShowASRouterNewTabMessage(
+            this.props.Messages,
+            "ASRouterNewTabMessage",
+            ASROUTER_NEWTAB_MESSAGE_POSITIONS.ABOVE_WIDGETS
+          ) && (
+            <ErrorBoundary>
+              <MessageWrapper dispatch={this.props.dispatch}>
+                <ExternalComponentWrapper
+                  type="ASROUTER_NEWTAB_MESSAGE"
+                  messageData={this.props.Messages.messageData}
+                  className="asrouter-newtab-message-wrapper"
+                />
+              </MessageWrapper>
+            </ErrorBoundary>
+          )}
+
+        {spacesActive ? (
+          <Spaces spaces={spaceEntries} dispatch={this.props.dispatch} />
+        ) : (
+          <React.Fragment>
+            {widgetsGroup}
+
+            {
+              //@nova-cleanup(remove-conditional): Remove this entire block; in the Nova layout Base.jsx passes ABOVE_CONTENT_FEED in via the aboveContentFeed prop below. */
+            }
+            {!novaEnabled &&
+              shouldShowASRouterNewTabMessage(
+                this.props.Messages,
+                "ASRouterNewTabMessage",
+                ASROUTER_NEWTAB_MESSAGE_POSITIONS.ABOVE_CONTENT_FEED
+              ) && (
+                <ErrorBoundary>
+                  <MessageWrapper dispatch={this.props.dispatch}>
+                    <ExternalComponentWrapper
+                      type="ASROUTER_NEWTAB_MESSAGE"
+                      messageData={this.props.Messages.messageData}
+                      className="asrouter-newtab-message-wrapper"
+                    />
+                  </MessageWrapper>
+                </ErrorBoundary>
+              )}
+
+            {contentGroup}
+            {highlightsGroup}
+          </React.Fragment>
+        )}
       </React.Fragment>
     );
   }
@@ -391,10 +463,12 @@ export class _DiscoveryStreamBase extends React.PureComponent {
     const styles = [];
     let [data] = layoutRender;
     // Add helper class for topsites
-    const topsitesClass = data.sectionType ? "ds-layout-topsites" : "";
+    const sectionClass = data.sectionType
+      ? `ds-layout-${data.sectionType}`
+      : "";
 
     return (
-      <div className={`discovery-stream ds-layout ${topsitesClass}`}>
+      <div className={`discovery-stream ds-layout ${sectionClass}`}>
         {layoutRender.map((row, rowIndex) => (
           <div
             key={`row-${rowIndex}`}
@@ -426,6 +500,7 @@ export class _DiscoveryStreamBase extends React.PureComponent {
 
 export const DiscoveryStreamBase = connect(state => ({
   DiscoveryStream: state.DiscoveryStream,
+  Messages: state.Messages,
   Prefs: state.Prefs,
   Sections: state.Sections,
   document: globalThis.document,

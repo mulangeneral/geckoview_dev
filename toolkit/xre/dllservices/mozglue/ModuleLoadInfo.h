@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
@@ -9,7 +7,6 @@
 
 #include "mozilla/NativeNt.h"
 #include "mozilla/Vector.h"
-#include "mozilla/Unused.h"
 
 namespace mozilla {
 
@@ -31,6 +28,7 @@ struct ModuleLoadInfo final {
         mThreadId(nt::RtlGetCurrentThreadId()),
         mRequestedDllName(aRequestedDllName),
         mBaseAddr(nullptr),
+        mSectionHandleUnavailable(false),
         mStatus(Status::Loaded),
         mIsDependent(false) {
 #  if defined(IMPL_MFBT)
@@ -52,6 +50,7 @@ struct ModuleLoadInfo final {
         mThreadId(nt::RtlGetCurrentThreadId()),
         mSectionName(std::move(aSectionName)),
         mBaseAddr(aBaseAddr),
+        mSectionHandleUnavailable(false),
         mStatus(aLoadStatus),
         mIsDependent(aIsDependent) {
 #  if defined(IMPL_MFBT)
@@ -105,7 +104,7 @@ struct ModuleLoadInfo final {
     // is just a macro that resolve to this function anyway.
     WORD numCaptured = ::RtlCaptureStackBackTrace(2, kMaxBacktraceSize,
                                                   mBacktrace.begin(), nullptr);
-    Unused << mBacktrace.resize(numCaptured);
+    (void)mBacktrace.resize(numCaptured);
     // These backtraces might stick around for a while, so let's trim any
     // excess memory.
     mBacktrace.shrinkStorageToFit();
@@ -164,6 +163,18 @@ struct ModuleLoadInfo final {
   nt::AllocatedUnicodeString mSectionName;
   // The base address of the module's mapped section
   const void* mBaseAddr;
+  // A read-only duplicate of the section this module was mapped from, taken by
+  // the NtMapViewOfSection hook.
+  //
+  // Null for any load the NtMapViewOfSection hook did not take a handle for.
+  // See mSectionHandleUnavailable for how to tell the two reasons apart.
+  nt::AutoHandle mSectionHandle;
+  // Set when the hook did reach this load and tried to duplicate the section,
+  // but the duplication failed.  This is used to distinguish that case from
+  // the case where mSectionHandle is null for the loads the hook deliberately
+  // skips (e.g. non-IMAGEs, low-integrity modules, etc).  The distinction is
+  // recorded in telemetry.
+  bool mSectionHandleUnavailable;
   // If the module was successfully loaded, stack trace of the DLL load request
   Vector<PVOID, 0, nt::RtlAllocPolicy> mBacktrace;
   // The status of DLL load

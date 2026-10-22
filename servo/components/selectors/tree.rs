@@ -24,26 +24,22 @@ unsafe impl Sync for OpaqueElement {}
 impl OpaqueElement {
     /// Creates a new OpaqueElement from an arbitrarily-typed pointer.
     pub fn new<T>(ptr: &T) -> Self {
-        unsafe {
-            OpaqueElement(NonNull::new_unchecked(
-                ptr as *const T as *const () as *mut (),
-            ))
-        }
+        OpaqueElement(NonNull::from_ref(ptr).cast())
     }
 
     /// Creates a new OpaqueElement from a type-erased non-null pointer
-    pub fn from_non_null_ptr(ptr: NonNull<()>) -> Self {
+    pub fn from_ptr(ptr: NonNull<()>) -> Self {
         Self(ptr)
     }
 
-    /// Returns a const ptr to the contained reference. Unsafe especially
-    /// since Element can be recovered and potentially-mutated.
-    pub unsafe fn as_const_ptr<T>(&self) -> *const T {
-        self.0.as_ptr() as *const T
+    /// Returns the reference as an untyped pointer.
+    #[inline]
+    pub fn to_ptr(&self) -> NonNull<()> {
+        self.0
     }
 }
 
-pub trait Element: Sized + Clone + Debug {
+pub trait Element: Sized + Copy + Clone + Debug {
     type Impl: SelectorImpl;
 
     /// Converts self into an opaque representation.
@@ -148,10 +144,7 @@ pub trait Element: Sized + Clone + Debug {
         case_sensitivity: CaseSensitivity,
     ) -> bool;
 
-    fn has_custom_state(
-        &self,
-        name: &<Self::Impl as SelectorImpl>::Identifier,
-    ) -> bool;
+    fn has_custom_state(&self, name: &<Self::Impl as SelectorImpl>::Identifier) -> bool;
 
     /// Returns the mapping from the `exportparts` attribute in the reverse
     /// direction, that is, in an outer-tree -> inner-tree direction.

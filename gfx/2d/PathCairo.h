@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -7,9 +5,10 @@
 #ifndef MOZILLA_GFX_PATH_CAIRO_H_
 #define MOZILLA_GFX_PATH_CAIRO_H_
 
+#include <vector>
+
 #include "2D.h"
 #include "cairo.h"
-#include <vector>
 
 namespace mozilla {
 namespace gfx {
@@ -31,6 +30,8 @@ class PathBuilderCairo : public PathBuilder {
   void Arc(const Point& aOrigin, float aRadius, float aStartAngle,
            float aEndAngle, bool aAntiClockwise = false) override;
   already_AddRefed<Path> Finish() override;
+
+  bool Reset(FillRule aFillRule) override;
 
   BackendType GetBackendType() const override { return BackendType::CAIRO; }
 

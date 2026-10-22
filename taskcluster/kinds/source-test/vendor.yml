@@ -3,7 +3,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 ---
 task-defaults:
-    worker-type: t-linux-docker
+    worker-type: t-linux-docker-amd
     attributes:
         code-review: true
     worker:
@@ -13,6 +13,9 @@ task-defaults:
             - type: file
               name: public/code-review/issues.json
               path: /builds/worker/issues.json
+            - type: file
+              name: public/code-review/vcs-diff.diff
+              path: /builds/worker/vcs-diff.diff
     treeherder:
         kind: test
         tier: 1
@@ -30,7 +33,7 @@ rust:
     run:
         cwd: '{checkout}'
         command: >-
-            ./mach vendor rust --issues-json /builds/worker/issues.json
+            ./mach vendor rust --issues-json /builds/worker/issues.json --vcs-diff /builds/worker/vcs-diff.diff
     fetches:
         toolchain:
             - linux64-cargo-vet
@@ -42,3 +45,31 @@ rust:
             - 'python/mozbuild/mozbuild/vendor/vendor_rust.py'
             - 'supply-chain/**'
             - 'third_party/rust/**'
+
+node:
+    description: Node vendoring validation
+    attributes:
+        code-review: false
+    treeherder:
+        symbol: node(vendor)
+    worker:
+        artifacts: []
+        env:
+            MACH_BUILD_PYTHON_NATIVE_PACKAGE_SOURCE: system
+    run:
+        clone-with: hg
+        cwd: '{checkout}'
+        command: >-
+            ./mach vendor node --ignore-modified &&
+            test -z "$(hg status third_party/node)"
+    fetches:
+        toolchain:
+            - linux64-node
+        fetch:
+            - pnpm
+    when:
+        files-changed:
+            - 'third_party/node/**'
+            - 'browser/extensions/newtab/package.json'
+            - 'python/mozbuild/mozbuild/vendor/vendor_node.py'
+            - 'taskcluster/kinds/fetch/pnpm.yml'

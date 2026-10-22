@@ -512,6 +512,7 @@ typedef enum {
     SEC_OID_HMAC_SHA3_384 = 370,
     SEC_OID_HMAC_SHA3_512 = 371,
 
+    /* deprecated: round-3 Kyber (xyber768d00) removed; value retained for ABI */
     SEC_OID_XYBER768D00 = 372,
 
     SEC_OID_ED25519_SIGNATURE = 373,
@@ -531,10 +532,21 @@ typedef enum {
     SEC_OID_RC2_128_CBC = 386,
     SEC_OID_ECDH_KEA = 387,
     SEC_OID_X25519 = 388,
-
     SEC_OID_MLKEM768X25519 = 389,
 
     SEC_OID_TLS_REQUIRE_EMS = 390,
+
+    SEC_OID_ML_DSA_44 = 391,
+    SEC_OID_ML_DSA_65 = 392,
+    SEC_OID_ML_DSA_87 = 393,
+
+    SEC_OID_SECP256R1MLKEM768 = 394,
+    SEC_OID_SECP384R1MLKEM1024 = 395,
+    SEC_OID_ML_KEM_512 = 396,
+    SEC_OID_ML_KEM_768 = 397,
+    SEC_OID_ML_KEM_1024 = 398,
+
+    SEC_OID_CMS_AUTH_ENVELOPED_DATA = 399,
 
     SEC_OID_TOTAL
 } SECOidTag;
@@ -545,6 +557,14 @@ typedef enum {
 
 /* fake OID for DSS sign/verify */
 #define SEC_OID_SHA SEC_OID_MISS_DSS
+
+/* ML-DSA Public keys and signatures use the same identifier */
+#define SEC_OID_ML_DSA_44_SIGNATURE SEC_OID_ML_DSA_44
+#define SEC_OID_ML_DSA_44_PUBLIC_KEY SEC_OID_ML_DSA_44
+#define SEC_OID_ML_DSA_65_SIGNATURE SEC_OID_ML_DSA_65
+#define SEC_OID_ML_DSA_65_PUBLIC_KEY SEC_OID_ML_DSA_65
+#define SEC_OID_ML_DSA_87_SIGNATURE SEC_OID_ML_DSA_87
+#define SEC_OID_ML_DSA_87_PUBLIC_KEY SEC_OID_ML_DSA_87
 
 typedef enum {
     INVALID_CERT_EXTENSION = 0,

@@ -51,7 +51,7 @@ export class PopupAndRedirectBlockingChild extends JSWindowActorChild {
    * Returns the per-document state object for the current `document`,
    * creating and storing a new one in the WeakMap if it does not exist.
    *
-   * @returns {DocState}
+   * @returns {DocState} The state object for the current document.
    */
   #getOrCreateDocState() {
     let state = this.#mWeakDocStates.get(this.document);

@@ -2,23 +2,587 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+//! Contains functionality to help building the render task graph from a series of off-screen
+//! surfaces that are created during the prepare pass, and other surface related types and
+//! helpers.
+
 use api::units::*;
 use crate::command_buffer::{CommandBufferBuilderKind, CommandBufferList, CommandBufferBuilder, CommandBufferIndex};
-use crate::internal_types::FastHashMap;
-use crate::picture::{SurfaceInfo, SurfaceIndex, TileKey, SubSliceIndex, MAX_COMPOSITOR_SURFACES};
+use crate::internal_types::{FastHashMap, FastHashSet};
+use crate::picture_composite_mode::PictureCompositeMode;
+use crate::tile_cache::{TileKey, SubSliceIndex, MAX_COMPOSITOR_SURFACES};
 use crate::prim_store::PictureIndex;
 use crate::render_task_graph::{RenderTaskId, RenderTaskGraphBuilder};
 use crate::render_target::ResolveOp;
 use crate::render_task::{RenderTask, RenderTaskKind, RenderTaskLocation};
-use crate::visibility::{VisibilityState, PrimitiveVisibility};
+use crate::space::SpaceMapper;
+use crate::spatial_tree::{CoordinateSpaceMapping, CoordinateSystemId, SpatialTree, SpatialNodeIndex};
+use crate::util::{MaxRect, ScaleOffset};
+use crate::visibility::{DrawState, PrimitiveDrawHeader, FrameVisibilityContext};
+pub use crate::picture_composite_mode::get_surface_rects;
 
-/*
- Contains functionality to help building the render task graph from a series of off-screen
- surfaces that are created during the prepare pass. For now, it maintains existing behavior.
- A future patch will add support for surface sub-graphs, while ensuring the render task
- graph itself is built correctly with dependencies regardless of the surface kind (chained,
- tiled, simple).
- */
+/// Walk the filter chain rooted at `task_id` and make every task in it that
+/// samples `src_task_id` depend on `dep_task_id` as well.
+///
+/// The tasks that sample the chain's source sit at the *start* of the chain, not
+/// at the root (which is its output), so making the root alone depend on
+/// `dep_task_id` is not enough. How many there are depends on the chain:
+///  - Blur: one, the vertical blur - or the first downscale, for a blur large
+///    enough that `new_blur` scales it down first.
+///  - Drop-shadow: one. Every shadow blurs from the same source task, but only
+///    the last chain is reachable from the root, and all of the shadow quads
+///    sample that one task.
+///  - SVG filter graph: potentially several, since any node in the graph may
+///    take SourceGraphic as an input.
+fn order_readers_after(
+    rg_builder: &mut RenderTaskGraphBuilder,
+    task_id: RenderTaskId,
+    src_task_id: RenderTaskId,
+    dep_task_id: RenderTaskId,
+) {
+    let mut visited = FastHashSet::default();
+    let mut pending = FastHashSet::default();
+    pending.insert(task_id);
+
+    while !pending.is_empty() {
+        for task_id in std::mem::take(&mut pending) {
+            visited.insert(task_id);
+
+            let children = rg_builder.get_task(task_id).children.clone();
+
+            if children.contains(&src_task_id) {
+                rg_builder.add_dependency(task_id, dep_task_id);
+            }
+            for child_id in children {
+                if child_id != src_task_id && !visited.contains(&child_id) {
+                    pending.insert(child_id);
+                }
+            }
+        }
+    }
+}
+
+/// Fetch the raster spatial node of a picture render task (used to relate the
+/// raster spaces of a resolve target and the surface(s) it reads back from).
+fn raster_spatial_node(
+    rg_builder: &RenderTaskGraphBuilder,
+    task_id: RenderTaskId,
+) -> SpatialNodeIndex {
+    match rg_builder.get_task(task_id).kind {
+        RenderTaskKind::Picture(ref info) => info.raster_spatial_node_index,
+        _ => unreachable!("bug: resolve src/dest task is not a picture"),
+    }
+}
+
+/// Compute the mapping from a resolve target's raster space into the raster
+/// space of the surface(s) it reads back from, for use by `handle_resolve`.
+///
+/// A resolve target (backdrop-filter sub-graph) and the surface it captures
+/// always share a surface spatial node: `finalize_picture` resolves the filter
+/// picture's spatial node to its backdrop root. They differ only in their raster
+/// root, and only when the resolve target promotes to a root-snapping raster
+/// root (the root reference frame) while the parent rasterizes against its own
+/// node (e.g. a scrolling tile cache). Both nodes are then in the root
+/// coordinate system, so the relationship is always a `ScaleOffset` (the
+/// identity when the raster roots coincide); it can never be a non-axis-aligned
+/// `Transform`, because a resolve target under a non-root coordinate system does
+/// not promote and shares its parent's raster node.
+fn resolve_dest_to_src_raster(
+    rg_builder: &RenderTaskGraphBuilder,
+    spatial_tree: &SpatialTree,
+    dest_task_id: RenderTaskId,
+    src_task_ids: &[RenderTaskId],
+) -> ScaleOffset {
+    // All src tasks are tiles of the same parent surface, so they share a raster
+    // node; the first is representative.
+    let Some(&first_src) = src_task_ids.first() else {
+        return ScaleOffset::identity();
+    };
+
+    let dest_raster = raster_spatial_node(rg_builder, dest_task_id);
+    let src_raster = raster_spatial_node(rg_builder, first_src);
+
+    if src_raster == dest_raster {
+        return ScaleOffset::identity();
+    }
+
+    match spatial_tree.get_relative_transform(dest_raster, src_raster) {
+        CoordinateSpaceMapping::ScaleOffset(scale_offset) => scale_offset,
+        // Distinct nodes with an identity relationship: no correction needed.
+        CoordinateSpaceMapping::Local => ScaleOffset::identity(),
+        CoordinateSpaceMapping::Transform(..) => {
+            // Unreachable given the shared-coordinate-system invariant above; a
+            // rect-to-rect copy can't express a rotation, so degrade to the old
+            // (uncorrected) behaviour rather than crash a release build.
+            debug_assert!(
+                false,
+                "resolve target and its backdrop source must share the root coordinate system",
+            );
+            ScaleOffset::identity()
+        }
+    }
+}
+
+/// The spatial node that visibility, clipping, dirty-region and invalidation
+/// calculations for a surface are performed relative to.
+///
+/// Everything downstream treats `VisPixel` as the local space of the returned
+/// node, so a surface's culling rect and every primitive or clip rect projected
+/// for a culling decision must be built against the same node.
+///
+/// This is the surface's raster node, so content is culled against the region of
+/// the render target it is drawn into rather than a region of the screen. A
+/// primitive's relationship to that node is usually a plain 2D scale and offset
+/// even when its relationship to the screen is not: a raster root established for
+/// a preserve-3d or perspective subtree sits inside the transform that makes the
+/// screen-relative mapping hard.
+///
+/// The cost is that visibility space need not be axis-aligned with the screen any
+/// more, so the culling rect may have no exact pre-image; see `culling_rect`.
+pub fn visibility_node(
+    raster_spatial_node_index: SpatialNodeIndex,
+) -> SpatialNodeIndex {
+    debug_assert_ne!(raster_spatial_node_index, SpatialNodeIndex::INVALID);
+
+    raster_spatial_node_index
+}
+
+/// The mapping between a vis node's space and the screen framebuffer's device
+/// space. That is the root reference frame's space - the root carries no device
+/// scale of its own - which is what lets the screen rect be the target of this
+/// mapping.
+///
+/// Only a 2D scale and offset makes a rect mapped through this a sound bound in
+/// the other space: `map` and `unmap` take the bounding box of the four mapped
+/// corners, which is the exact image for a 2D scale+offset but *not* a superset
+/// of it once the mapping rotates or has perspective. The image of an
+/// axis-aligned rect is then a general quadrilateral, possibly unbounded, and
+/// its corners do not bound it; culling against that would drop content that is
+/// on screen. Callers must check `as_2d_scale_offset` before trusting the
+/// result for culling.
+fn vis_to_root_mapper(
+    visibility_spatial_node_index: SpatialNodeIndex,
+    bounds: DeviceRect,
+    spatial_tree: &SpatialTree,
+) -> SpaceMapper<VisPixel, DevicePixel> {
+    SpaceMapper::new_with_target(
+        spatial_tree.root_reference_frame_index(),
+        visibility_spatial_node_index,
+        bounds,
+        spatial_tree,
+    )
+}
+
+/// Maximum blur radius for blur filter
+const MAX_BLUR_RADIUS: f32 = 100.;
+
+/// An index into the surface array
+#[derive(Debug, Copy, Clone, Eq, PartialEq, Hash)]
+#[cfg_attr(feature = "capture", derive(Serialize))]
+#[cfg_attr(feature = "replay", derive(Deserialize))]
+pub struct SurfaceIndex(pub usize);
+
+/// Specify whether a surface allows subpixel AA text rendering.
+#[derive(Debug, Copy, Clone)]
+pub enum SubpixelMode {
+    /// This surface allows subpixel AA text
+    Allow,
+    /// Subpixel AA text cannot be drawn on this surface
+    Deny,
+    /// Subpixel AA can be drawn on this surface, if not intersecting
+    /// with the excluded regions, and inside the allowed rect.
+    Conditional {
+        allowed_rect: PictureRect,
+        prohibited_rect: PictureRect,
+    },
+}
+
+/// Information about an offscreen surface. For now,
+/// it contains information about the size and coordinate
+/// system of the surface. In the future, it will contain
+/// information about the contents of the surface, which
+/// will allow surfaces to be cached / retained between
+/// frames and display lists.
+pub struct SurfaceInfo {
+    /// A local rect defining the size of this surface, in the
+    /// coordinate system of the parent surface. This contains
+    /// the unclipped bounding rect of child primitives.
+    ///
+    /// SNAPTODO: This rect is built by mapping per-cluster bounding
+    /// rects (and child-surface coverage rects) into this surface's
+    /// picture space via `map_local_to_picture`. Even once the source
+    /// cluster bound is a true union of per-prim *snapped* local
+    /// rects, the resulting `unclipped_local_rect` is not guaranteed
+    /// to be snapped: any 2D transform that isn't an axis-aligned,
+    /// integer-pixel translation between the cluster/child-surface
+    /// spatial node and this surface's spatial node will produce
+    /// sub-pixel edges in picture space. Float blur-margin inflation
+    /// inside `composite_mode.get_coverage` can also break the snap.
+    /// Consumers that need a snapped value will either need to
+    /// re-snap in surface space or restrict the snap path to surfaces
+    /// where the cross-space mapping preserves grid alignment (see
+    /// `SurfaceInfo.allow_snapping`).
+    pub unclipped_local_rect: PictureRect,
+    /// The local space coverage of child primitives after they are
+    /// are clipped to their owning clip-chain.
+    pub clipped_local_rect: PictureRect,
+    /// The (conservative) valid part of this surface rect. Used
+    /// to reduce the size of render target allocation.
+    pub clipping_rect: PictureRect,
+    /// The rectangle to use for culling and clipping, in the local space of
+    /// `visibility_spatial_node_index`. A primitive outside it cannot affect
+    /// anything on screen.
+    ///
+    /// For a root surface this is the visible region of the screen expressed in
+    /// that space. For a child surface it is that region as seen through the
+    /// chain of composite modes above it, which is *not* just the part of the
+    /// screen the surface covers: a blur, a drop shadow or an SVG filter graph
+    /// samples outside its own destination, so content that is off-screen (or
+    /// outside the parent's culling rect) still contributes through them.
+    /// `update_culling_rect` expands the rect by what the composite mode reads.
+    ///
+    /// Never empty as a way of saying "nothing is visible": an empty culling
+    /// rect culls the whole surface, so any projection that cannot be computed
+    /// falls back to `max_rect` (cull nothing) instead.
+    pub culling_rect: VisRect,
+    /// Whether `culling_rect` is the `max_rect` fallback rather than a real
+    /// projection of the screen. Instrumentation only: a `max_rect` culling rect
+    /// is also legitimate for a surface handed an unbounded screen rect.
+    pub culling_rect_projection_failed: bool,
+    /// Helper structs for mapping local rects in different
+    /// coordinate systems into the picture coordinates.
+    pub map_local_to_picture: SpaceMapper<LayoutPixel, PicturePixel>,
+    /// The positioning node for the surface itself,
+    pub surface_spatial_node_index: SpatialNodeIndex,
+    /// The rasterization root for this surface.
+    pub raster_spatial_node_index: SpatialNodeIndex,
+    /// The spatial node for culling and clipping (anything using VisPixel).
+    /// Chosen by `visibility_node`.
+    pub visibility_spatial_node_index: SpatialNodeIndex,
+    /// The device pixel ratio specific to this surface.
+    pub device_pixel_scale: DevicePixelScale,
+    /// The scale factors of the surface to world transform. Child surfaces
+    /// multiply their own child-to-parent scale by this to obtain
+    /// child-to-device, so it must describe this surface's space all the way to
+    /// device space.
+    pub world_scale_factors: (f32, f32),
+    /// The remaining per-axis scale from the space this surface rasterizes in to
+    /// device space, i.e. `local_scale * blur_scale_factors` is the surface's
+    /// full local-to-device scale. Only blur radius clamping uses it, and it is
+    /// kept separate from `world_scale_factors` because a root-snapping surface
+    /// rasterizes in root space (so this is one) while still needing to report a
+    /// real scale to its children.
+    pub blur_scale_factors: (f32, f32),
+    /// Local scale factors surface to raster transform
+    pub local_scale: (f32, f32),
+    /// If true, we know this surface is completely opaque.
+    pub is_opaque: bool,
+    /// Whether content rasterized into this surface is snapped to the device
+    /// pixel grid at frame time. True for tile caches (snapped against the
+    /// scroll-stable cache node) and root-snapping surfaces (raster node is
+    /// root). False for a non-snapping raster root (preserve-3d / perspective /
+    /// huge-scale, `enable_snapping == false`): snapping against its own scaled
+    /// node would use only the tiny local scale and collapse content to zero,
+    /// so content is left unsnapped there instead.
+    pub allow_snapping: bool,
+    /// If true, the scissor rect must be set when drawing this surface
+    pub force_scissor_rect: bool,
+    /// For an SVGFEGraph surface, the mapping from the space the filter
+    /// subregions are authored in (the filtered element's spatial node) to this
+    /// surface's spatial node. Non-identity for backdrop filters, whose graph
+    /// composites in backdrop-root space; it is a full scale+offset because an
+    /// intervening reference frame may scale (e.g. pdf.js scales its text
+    /// spans), so a translation alone is not enough. All SVGFE coverage paths
+    /// map the subregions through this so they line up with the geometry.
+    pub svgfe_source_map: ScaleOffset,
+}
+
+impl SurfaceInfo {
+    pub fn new(
+        surface_spatial_node_index: SpatialNodeIndex,
+        raster_spatial_node_index: SpatialNodeIndex,
+        global_culling_rect: DeviceRect,
+        spatial_tree: &SpatialTree,
+        device_pixel_scale: DevicePixelScale,
+        world_scale_factors: (f32, f32),
+        blur_scale_factors: (f32, f32),
+        local_scale: (f32, f32),
+        allow_snapping: bool,
+        force_scissor_rect: bool,
+    ) -> Self {
+        let map_surface_to_root = SpaceMapper::new_with_target(
+            spatial_tree.root_reference_frame_index(),
+            surface_spatial_node_index,
+            global_culling_rect,
+            spatial_tree,
+        );
+
+        let pic_bounds = map_surface_to_root
+            .unmap(&map_surface_to_root.bounds)
+            .unwrap_or_else(PictureRect::max_rect);
+
+        let map_local_to_picture = SpaceMapper::new(
+            surface_spatial_node_index,
+            pic_bounds,
+        );
+
+        let visibility_spatial_node_index = visibility_node(raster_spatial_node_index);
+
+        // The culling rect is the screen, expressed in vis space.
+        let map_vis_to_root = vis_to_root_mapper(
+            visibility_spatial_node_index,
+            global_culling_rect,
+            spatial_tree,
+        );
+
+        // A vis node in the root coordinate system always gives a scale+offset,
+        // so the guard only bites for a raster root established inside a 3D
+        // context - where the answer is to cull nothing.
+        let projected = map_vis_to_root
+            .as_2d_scale_offset()
+            .and_then(|_| map_vis_to_root.unmap(&global_culling_rect));
+
+        let mut culling_rect_projection_failed = false;
+        let culling_rect = match projected {
+            Some(rect) => rect,
+            None => {
+                culling_rect_projection_failed = true;
+                // Cull nothing rather than everything; see `culling_rect`.
+                debug_assert_ne!(
+                    spatial_tree
+                        .get_spatial_node(visibility_spatial_node_index)
+                        .coordinate_system_id,
+                    CoordinateSystemId::root(),
+                    "vis node in the root coordinate system must give an exact culling rect",
+                );
+                VisRect::max_rect()
+            }
+        };
+
+        // The culling rect has to describe the same region as the screen rect it
+        // was derived from, so mapping it back must still cover the screen. A vis
+        // space that lost part of the screen on the way in would cull content
+        // that is genuinely visible - the failure mode that matters when the vis
+        // node moves away from the root.
+        //
+        // Only checkable for a rect that came from a real projection. The
+        // `max_rect` fallback culls nothing by construction, and projecting it
+        // forward says nothing either way: `project_rect` clips against the near
+        // plane, so a near-plane-crossing transform maps `max_rect` to a bounded
+        // rect that need not cover the screen.
+        #[cfg(debug_assertions)]
+        if let Some(round_trip) = Some(&culling_rect)
+            .filter(|_| !culling_rect_projection_failed)
+            .and_then(|rect| map_vis_to_root.map(rect))
+        {
+            const EPSILON: f32 = 0.05;
+            debug_assert!(
+                round_trip.inflate(EPSILON, EPSILON).contains_box(&global_culling_rect),
+                "vis culling rect {:?} loses part of the screen {:?} (round trip {:?})",
+                culling_rect,
+                global_culling_rect,
+                round_trip,
+            );
+        }
+
+        SurfaceInfo {
+            unclipped_local_rect: PictureRect::zero(),
+            clipped_local_rect: PictureRect::zero(),
+            is_opaque: false,
+            clipping_rect: PictureRect::zero(),
+            map_local_to_picture,
+            raster_spatial_node_index,
+            surface_spatial_node_index,
+            visibility_spatial_node_index,
+            device_pixel_scale,
+            world_scale_factors,
+            blur_scale_factors,
+            local_scale,
+            allow_snapping,
+            force_scissor_rect,
+            svgfe_source_map: ScaleOffset::identity(),
+            culling_rect,
+            culling_rect_projection_failed,
+        }
+    }
+
+    /// Clamps the blur radius depending on scale factors.
+    pub fn clamp_blur_radius(
+        &self,
+        x_blur_radius: f32,
+        y_blur_radius: f32,
+    ) -> (f32, f32) {
+        // Clamping must occur after scale factors are applied, but scale factors are not applied
+        // until later on. To clamp the blur radius, we first apply the scale factors and then clamp
+        // and finally revert the scale factors.
+
+        let sx_blur_radius = x_blur_radius * self.local_scale.0;
+        let sy_blur_radius = y_blur_radius * self.local_scale.1;
+
+        let largest_scaled_blur_radius = f32::max(
+            sx_blur_radius * self.blur_scale_factors.0,
+            sy_blur_radius * self.blur_scale_factors.1,
+        );
+
+        if largest_scaled_blur_radius > MAX_BLUR_RADIUS {
+            let sf = MAX_BLUR_RADIUS / largest_scaled_blur_radius;
+            (x_blur_radius * sf, y_blur_radius * sf)
+        } else {
+            // Return the original blur radius to avoid any rounding errors
+            (x_blur_radius, y_blur_radius)
+        }
+    }
+
+    /// Derive this surface's culling rect from the one the parent surface uses.
+    ///
+    /// The parent's rect is in the parent's vis space, which is not this
+    /// surface's whenever the two pick different vis nodes, so it is mapped
+    /// across before anything else looks at it.
+    pub fn update_culling_rect(
+        &mut self,
+        parent_vis_spatial_node_index: SpatialNodeIndex,
+        parent_culling_rect: VisRect,
+        composite_mode: &PictureCompositeMode,
+        frame_context: &FrameVisibilityContext,
+    ) {
+        // A parent that culls nothing gives a child that culls nothing. Taking
+        // the general path instead would round-trip `max_rect` through
+        // projections that clip against the near plane, and the result need not
+        // still cover everything.
+        if parent_culling_rect == VisRect::max_rect() {
+            self.culling_rect = parent_culling_rect;
+            return;
+        }
+
+        let parent_culling_rect = if parent_vis_spatial_node_index == self.visibility_spatial_node_index {
+            parent_culling_rect
+        } else {
+            // Cross between the two vis spaces via the screen. The spatial tree
+            // only relates a node to one of its ancestors, and neither vis node
+            // need be an ancestor of the other, but both always relate to the
+            // root.
+            let map_parent_to_root = vis_to_root_mapper(
+                parent_vis_spatial_node_index,
+                frame_context.global_screen_device_rect,
+                frame_context.spatial_tree,
+            );
+            let map_vis_to_root = vis_to_root_mapper(
+                self.visibility_spatial_node_index,
+                frame_context.global_screen_device_rect,
+                frame_context.spatial_tree,
+            );
+
+            let projected = map_parent_to_root
+                .as_2d_scale_offset()
+                .and_then(|_| map_parent_to_root.map(&parent_culling_rect))
+                .and_then(|device_rect| {
+                    map_vis_to_root
+                        .as_2d_scale_offset()
+                        .and_then(|_| map_vis_to_root.unmap(&device_rect))
+                });
+
+            match projected {
+                Some(rect) => rect,
+                None => {
+                    // Cull nothing rather than everything; see `culling_rect`.
+                    self.culling_rect = VisRect::max_rect();
+                    return;
+                }
+            }
+        };
+
+        // Content outside the region this surface contributes to can still be
+        // sampled by it: a blur, a drop shadow or an SVG filter graph reads
+        // outside its own destination. Expand by what the composite mode reads,
+        // in surface space where those amounts are expressed, so the content
+        // feeding those samples stays inside the culling rect.
+        let map_surface_to_vis: SpaceMapper<PicturePixel, VisPixel> = SpaceMapper::new_with_target(
+            self.visibility_spatial_node_index,
+            self.surface_spatial_node_index,
+            parent_culling_rect,
+            frame_context.spatial_tree,
+        );
+
+        // Unmapping to surface space may be quite conservative in the case of a
+        // complex transform, especially perspective.
+        let expanded = map_surface_to_vis
+            .unmap(&parent_culling_rect)
+            .map(|local_rect| composite_mode.get_required_source_rect(self, local_rect.cast_unit()))
+            .and_then(|required_rect| map_surface_to_vis.map(&required_rect.cast_unit()));
+
+        // A failed mapping must not leave the un-expanded rect in place: that is
+        // exactly the rect that culls the content the expansion exists to keep.
+        self.culling_rect = expanded.unwrap_or_else(VisRect::max_rect);
+    }
+
+    pub fn map_to_device_rect(
+        &self,
+        picture_rect: &PictureRect,
+        spatial_tree: &SpatialTree,
+    ) -> DeviceRect {
+        let raster_rect = if self.raster_spatial_node_index != self.surface_spatial_node_index {
+            // Currently, the surface's spatial node can be different from its raster node only
+            // for surfaces in the root coordinate system for snapping reasons.
+            // See `PictureInstance::assign_surface`.
+            assert_eq!(self.device_pixel_scale.0, 1.0);
+            assert_eq!(self.raster_spatial_node_index, spatial_tree.root_reference_frame_index());
+
+            let pic_to_raster = SpaceMapper::new_with_target(
+                self.raster_spatial_node_index,
+                self.surface_spatial_node_index,
+                WorldRect::max_rect(),
+                spatial_tree,
+            );
+
+            pic_to_raster.map(&picture_rect).unwrap()
+        } else {
+            picture_rect.cast_unit()
+        };
+
+        raster_rect * self.device_pixel_scale
+    }
+
+    /// Clip and transform a local rect to a device rect suitable for allocating
+    /// a child off-screen surface of this surface (e.g. for clip-masks)
+    pub fn get_surface_rect(
+        &self,
+        local_rect: &PictureRect,
+        spatial_tree: &SpatialTree,
+    ) -> Option<DeviceIntRect> {
+        let local_rect = match local_rect.intersection(&self.clipping_rect) {
+            Some(rect) => rect,
+            None => return None,
+        };
+
+        let raster_rect = if self.raster_spatial_node_index != self.surface_spatial_node_index {
+            assert_eq!(self.device_pixel_scale.0, 1.0);
+
+            let local_to_world = SpaceMapper::new_with_target(
+                spatial_tree.root_reference_frame_index(),
+                self.surface_spatial_node_index,
+                WorldRect::max_rect(),
+                spatial_tree,
+            );
+
+            local_to_world.map(&local_rect).unwrap()
+        } else {
+            // The content should have been culled out earlier.
+            assert!(self.device_pixel_scale.0 > 0.0);
+
+            local_rect.cast_unit()
+        };
+
+        let surface_rect = (raster_rect * self.device_pixel_scale).round_out().to_i32();
+        if surface_rect.is_empty() {
+            // The local_rect computed above may have non-empty size that is very
+            // close to zero. Due to limited arithmetic precision, the SpaceMapper
+            // might transform the near-zero-sized rect into a zero-sized one.
+            return None;
+        }
+
+        Some(surface_rect)
+    }
+}
 
 // Information about the render task(s) for a given tile
 #[cfg_attr(feature = "capture", derive(Serialize))]
@@ -302,26 +866,26 @@ impl SurfaceBuilder {
     // to for a given current visbility / dirty state
     pub fn get_cmd_buffer_targets_for_prim(
         &mut self,
-        vis: &PrimitiveVisibility,
+        vis: &PrimitiveDrawHeader,
         targets: &mut Vec<CommandBufferIndex>,
     ) -> bool {
         targets.clear();
 
         match vis.state {
-            VisibilityState::Unset => {
+            DrawState::Unset => {
                 panic!("bug: invalid vis state");
             }
-            VisibilityState::Culled => {
+            DrawState::Culled => {
                 false
             }
-            VisibilityState::Visible { sub_slice_index, .. } => {
+            DrawState::Visible { sub_slice_index, .. } => {
                 self.current_cmd_buffers.get_cmd_buffer_targets_for_rect(
                     &vis.clip_chain.pic_coverage_rect,
                     sub_slice_index,
                     targets,
                 )
             }
-            VisibilityState::PassThrough => {
+            DrawState::PassThrough => {
                 true
             }
         }
@@ -338,6 +902,7 @@ impl SurfaceBuilder {
         pic_index: PictureIndex,
         rg_builder: &mut RenderTaskGraphBuilder,
         cmd_buffers: &mut CommandBufferList,
+        spatial_tree: &SpatialTree,
     ) {
         let builder = self.builder_stack.pop().unwrap();
 
@@ -441,7 +1006,7 @@ impl SurfaceBuilder {
                                     }
                                 }
                             }
-                            CommandBufferBuilderKind::Simple { render_task_id: ref mut parent_task_id, .. } => {
+                            CommandBufferBuilderKind::Simple { render_task_id: ref mut parent_task_id, root_task_id: ref parent_root_task_id, .. } => {
                                 let parent_task = rg_builder.get_task_mut(*parent_task_id);
 
                                 // Get info about the parent tile task location and params
@@ -485,6 +1050,20 @@ impl SurfaceBuilder {
                                     *parent_task_id,
                                 );
 
+                                // If the parent is a chained surface (e.g. a CSS blur or drop-shadow
+                                // filter), the tasks in that chain sample the same texture that
+                                // new_task_id draws the post-backdrop-capture content into. They must
+                                // run after new_task_id, otherwise those primitives are missing from
+                                // the filter output.
+                                if let Some(root_task_id) = *parent_root_task_id {
+                                    order_readers_after(
+                                        rg_builder,
+                                        root_task_id,
+                                        *parent_task_id,
+                                        new_task_id,
+                                    );
+                                }
+
                                 // Update the surface builder with the now current target for future primitives
                                 *parent_task_id = new_task_id;
                             }
@@ -492,6 +1071,20 @@ impl SurfaceBuilder {
                                 unreachable!();
                             }
                         }
+
+                        // The resolve target may establish a different raster
+                        // root than the parent surface(s) it reads back from (for
+                        // example a backdrop-filter that promoted to a
+                        // root-snapping raster root inside a scrolled subtree). The
+                        // copy rects computed in `handle_resolve` then live in two
+                        // different raster spaces, so pre-compute the mapping
+                        // between them here (identity in the common case).
+                        let dest_to_src_raster = resolve_dest_to_src_raster(
+                            rg_builder,
+                            spatial_tree,
+                            resolve_task_id,
+                            &src_task_ids,
+                        );
 
                         let dest_task = rg_builder.get_task_mut(resolve_task_id);
 
@@ -501,6 +1094,7 @@ impl SurfaceBuilder {
                                 dest_task_info.resolve_op = Some(ResolveOp {
                                     src_task_ids,
                                     dest_task_id: resolve_task_id,
+                                    dest_to_src_raster,
                                 })
                             }
                             _ => {
@@ -616,4 +1210,18 @@ impl SurfaceBuilder {
     pub fn finalize(self) {
         assert!(self.builder_stack.is_empty());
     }
+}
+
+
+pub fn calculate_screen_uv(
+    p: DevicePoint,
+    clipped: DeviceRect,
+) -> DeviceHomogeneousVector {
+    // TODO(gw): Switch to a simple mix, no bilerp / homogeneous vec needed anymore
+    DeviceHomogeneousVector::new(
+        (p.x - clipped.min.x) / (clipped.max.x - clipped.min.x),
+        (p.y - clipped.min.y) / (clipped.max.y - clipped.min.y),
+        0.0,
+        1.0,
+    )
 }

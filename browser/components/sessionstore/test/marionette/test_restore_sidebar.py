@@ -21,18 +21,16 @@ class TestSessionRestore(SessionStoreTestCase):
     """
 
     def setUp(self):
-        super(TestSessionRestore, self).setUp(
+        super().setUp(
             startup_page=1,
             include_private=False,
             restore_on_demand=True,
-            test_windows=set(
-                [
-                    (
-                        inline("lorem ipsom"),
-                        inline("dolor"),
-                    ),
-                ]
-            ),
+            test_windows=set([
+                (
+                    inline("lorem ipsom"),
+                    inline("dolor"),
+                ),
+            ]),
         )
 
     def test_restore_sidebar_open(self):
@@ -99,7 +97,7 @@ class TestSessionRestore(SessionStoreTestCase):
                 """
                 const lazy = {};
                 ChromeUtils.defineESModuleGetters(lazy, {
-                    SessionStore: "resource:///modules/sessionstore/SessionStore.sys.mjs",
+                    SessionStore: "moz-src:///browser/components/sessionstore/SessionStore.sys.mjs",
                 });
                 let state = SessionStore.getCurrentState();
                 return state.windows[0].sidebar.command;
@@ -227,19 +225,19 @@ class TestSessionRestore(SessionStoreTestCase):
             1,
             msg="Should have 1 window open.",
         )
-        self.assertFalse(
+        self.assertTrue(
             self.marionette.execute_script(
                 """
                 const window = BrowserWindowTracker.getTopWindow();
                 return window.SidebarController.sidebarContainer.hidden;
                 """
             ),
-            "Sidebar is visible before window is closed.",
+            "Sidebar is hidden before window is closed.",
         )
 
         self.marionette.restart()
 
-        self.assertFalse(
+        self.assertTrue(
             self.marionette.execute_script(
                 """
                 const window = BrowserWindowTracker.getTopWindow();

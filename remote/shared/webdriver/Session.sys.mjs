@@ -2,16 +2,23 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this file,
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
+import { XPCOMUtils } from "resource://gre/modules/XPCOMUtils.sys.mjs";
+
 const lazy = {};
 
 ChromeUtils.defineESModuleGetters(lazy, {
+  FileUtils: "resource://gre/modules/FileUtils.sys.mjs",
+
   accessibility:
     "chrome://remote/content/shared/webdriver/Accessibility.sys.mjs",
   Capabilities: "chrome://remote/content/shared/webdriver/Capabilities.sys.mjs",
   Certificates: "chrome://remote/content/shared/webdriver/Certificates.sys.mjs",
   error: "chrome://remote/content/shared/webdriver/Errors.sys.mjs",
+  FilePickerHandler:
+    "chrome://remote/content/shared/webdriver/FilePickerHandler.sys.mjs",
   generateUUID: "chrome://remote/content/shared/UUID.sys.mjs",
   Log: "chrome://remote/content/shared/Log.sys.mjs",
+  NavigableManager: "chrome://remote/content/shared/NavigableManager.sys.mjs",
   registerProcessDataActor:
     "chrome://remote/content/shared/webdriver/process-actors/WebDriverProcessDataParent.sys.mjs",
   RootMessageHandler:
@@ -25,12 +32,23 @@ ChromeUtils.defineESModuleGetters(lazy, {
     "chrome://remote/content/webdriver-bidi/WebDriverBiDiConnection.sys.mjs",
   WebSocketHandshake:
     "chrome://remote/content/server/WebSocketHandshake.sys.mjs",
+  windowManager: "chrome://remote/content/shared/WindowManager.sys.mjs",
 });
 
 ChromeUtils.defineLazyGetter(lazy, "logger", () => lazy.Log.get());
 
+XPCOMUtils.defineLazyServiceGetter(
+  lazy,
+  "aomStartup",
+  "@mozilla.org/addons/addon-manager-startup;1",
+  Ci.amIAddonManagerStartup
+);
+
 // Global singleton that holds active WebDriver sessions
 const webDriverSessions = new Map();
+
+// Notification emitted when a session is created or destroyed.
+const NOTIFY_WEBDRIVER_SESSION_CHANGED = "webdriver-session-changed";
 
 /**
  * @typedef {Set} SessionConfigurationFlags
@@ -52,10 +70,12 @@ const webDriverSessions = new Map();
 export class WebDriverSession {
   #bidi;
   #capabilities;
+  #chromeProtocolHandles;
   #connections;
   #http;
   #id;
   #messageHandler;
+  #navigableSeenNodes;
   #path;
 
   static SESSION_FLAG_BIDI = "bidi";
@@ -201,6 +221,9 @@ export class WebDriverSession {
    *     If, for whatever reason, a session could not be created.
    */
   constructor(capabilities, flags, connection) {
+    // List of handles for registered chrome:// URLs
+    this.#chromeProtocolHandles = new Map();
+
     // WebSocket connections that use this session. This also accounts for
     // possible disconnects due to network outages, which require clients
     // to reconnect.
@@ -260,21 +283,38 @@ export class WebDriverSession {
 
     // Maps a Navigable (browsing context or content browser for top-level
     // browsing contexts) to a Set of nodeId's.
-    this.navigableSeenNodes = new WeakMap();
+    this.#navigableSeenNodes = new WeakMap();
 
     lazy.registerProcessDataActor();
 
+    // Start the tracking of browsing contexts to create Navigable ids.
+    lazy.NavigableManager.startTracking();
+    lazy.windowManager.startTracking();
+
+    if (this.#shouldDismissFileDialog()) {
+      lazy.FilePickerHandler.dismissFilePickers(this);
+    }
+
     webDriverSessions.set(this.#id, this);
+
+    Services.obs.notifyObservers(null, NOTIFY_WEBDRIVER_SESSION_CHANGED);
   }
 
   destroy() {
     webDriverSessions.delete(this.#id);
 
+    // Stop the tracking of browsing contexts when no WebDriver
+    // session exists anymore.
+    lazy.NavigableManager.stopTracking();
+    lazy.windowManager.stopTracking();
+
     lazy.unregisterProcessDataActor();
 
-    this.navigableSeenNodes = null;
+    this.#navigableSeenNodes = null;
 
-    lazy.Certificates.enableSecurityChecks();
+    if (this.acceptInsecureCerts) {
+      lazy.Certificates.enableSecurityChecks();
+    }
 
     // Close all open connections which unregister themselves.
     this.#connections.forEach(connection => connection.close());
@@ -295,7 +335,19 @@ export class WebDriverSession {
         this._onMessageHandlerProtocolEvent
       );
       this.#messageHandler.destroy();
+
+      // allowFilePickers(this) is safe to call. If there was no call to
+      // dismissFilePickers(this), it will be a no-op.
+      // Only needed if BiDi was enabled (and therefore a messageHandler
+      // instance was created).
+      lazy.FilePickerHandler.allowFilePickers(this);
     }
+
+    for (const id of this.#chromeProtocolHandles.keys()) {
+      this.unregisterChromeHandler(id);
+    }
+
+    Services.obs.notifyObservers(null, NOTIFY_WEBDRIVER_SESSION_CHANGED);
   }
 
   get a11yChecks() {
@@ -312,6 +364,9 @@ export class WebDriverSession {
 
   set bidi(value) {
     this.#bidi = value;
+    if (this.#shouldDismissFileDialog()) {
+      lazy.FilePickerHandler.dismissFilePickers(this);
+    }
   }
 
   get capabilities() {
@@ -339,6 +394,10 @@ export class WebDriverSession {
     }
 
     return this.#messageHandler;
+  }
+
+  get navigableSeenNodes() {
+    return this.#navigableSeenNodes;
   }
 
   get pageLoadStrategy() {
@@ -373,6 +432,28 @@ export class WebDriverSession {
     return this.#capabilities.get("webSocketUrl");
   }
 
+  /**
+   * Implements the last steps of https://w3c.github.io/webdriver-bidi/#webdriver-bidi-file-dialog-opened
+   *
+   * Compared to the spec, this is only invoked to setup the FilePickerHandler and
+   * not on each file dialog opened event. This allows to keep the FilePickerHandler
+   * simple and simply cancel the picker.
+   */
+  #shouldDismissFileDialog = () => {
+    // Only relevant for active BiDi sessions.
+    if (!this.bidi) {
+      return false;
+    }
+
+    // Unlike other prompt handlers, the default behavior is to allow the file
+    // dialog to be opened. Only dismiss if the capability was explicitly set.
+    if (this.userPromptHandler.activePromptHandlers === null) {
+      return false;
+    }
+
+    return this.userPromptHandler.getPromptHandler("file").handler !== "ignore";
+  };
+
   async execute(module, command, params) {
     // XXX: At the moment, commands do not describe consistently their destination,
     // so we will need a translation step based on a specific command and its params
@@ -394,6 +475,59 @@ export class WebDriverSession {
       params,
       destination,
     });
+  }
+
+  /**
+   * Register a chrome protocol handler for a directory containing XHTML or XUL
+   * files, allowing them to be loaded via the chrome:// protocol.
+   *
+   * @param {string} manifestPath
+   *     The base manifest path for the entries. URL values are resolved
+   *     relative to this path.
+   * @param {Array<Array<string, string, string>>} entries
+   *     An array of arrays, each containing a registry entry (type, namespace,
+   *     path, options) as it would appear in a chrome.manifest file. Only the
+   *     following entry types are currently accepted:
+   *
+   *         - "content" A URL entry. Must be a 3-element array.
+   *         - "override" A URL override entry. Must be a 3-element array.
+   *         - "locale" A locale package entry. Must be a 4-element array.
+   *
+   * @returns {string} id
+   *     The identifier for the registered chrome protocol handler.
+   */
+  registerChromeHandler(manifestPath, entries) {
+    const manifest = new lazy.FileUtils.File(manifestPath);
+    const rootURI = Services.io.newFileURI(manifest.parent);
+    const manifestURI = Services.io.newURI(manifest.leafName, null, rootURI);
+
+    const handle = lazy.aomStartup.registerChrome(manifestURI, entries);
+    const id = lazy.generateUUID();
+
+    this.#chromeProtocolHandles.set(id, handle);
+
+    return id;
+  }
+
+  /**
+   * Unregister a previously registered chrome protocol handler.
+   *
+   * @param {string} id
+   *     The identifier returned when the chrome protocol handler was registered.
+   *
+   * @throws {UnknownError}
+   *     If there is no such registered chrome protocol handler.
+   */
+  unregisterChromeHandler(id) {
+    if (!this.#chromeProtocolHandles.has(id)) {
+      throw new lazy.error.UnknownError(
+        `Id ${id} is not a known chrome protocol handler`
+      );
+    }
+
+    const handle = this.#chromeProtocolHandles.get(id);
+    this.#chromeProtocolHandles.delete(id);
+    handle.destruct();
   }
 
   /**
@@ -466,7 +600,7 @@ export function getSeenNodesForBrowsingContext(sessionId, browsingContext) {
   }
 
   const navigable =
-    lazy.TabManager.getNavigableForBrowsingContext(browsingContext);
+    lazy.NavigableManager.getNavigableForBrowsingContext(browsingContext);
   const session = getWebDriverSessionById(sessionId);
 
   if (!session.navigableSeenNodes.has(navigable)) {
@@ -487,4 +621,15 @@ export function getSeenNodesForBrowsingContext(sessionId, browsingContext) {
  */
 export function getWebDriverSessionById(sessionId) {
   return webDriverSessions.get(sessionId);
+}
+
+/**
+ * Check if at least one WebDriver session is currently active, which means that
+ * a remote application is connected to this browser instance.
+ *
+ * @returns {boolean}
+ *     True if a WebDriver session is active, false otherwise.
+ */
+export function hasActiveWebDriverSession() {
+  return webDriverSessions.size > 0;
 }

@@ -1,7 +1,7 @@
-import { FeatureHighlight } from "content-src/components/DiscoveryStreamComponents/FeatureHighlight/FeatureHighlight";
-import { SponsoredContentHighlight } from "content-src/components/DiscoveryStreamComponents/FeatureHighlight/SponsoredContentHighlight";
 import React from "react";
 import { mount } from "enzyme";
+
+import { FeatureHighlight } from "content-src/components/DiscoveryStreamComponents/FeatureHighlight/FeatureHighlight";
 
 describe("<FeatureHighlight>", () => {
   let wrapper;
@@ -18,15 +18,20 @@ describe("<FeatureHighlight>", () => {
 
   it("should render a title", () => {
     wrapper.setProps({ message: "foo" });
-    assert.ok(wrapper.find(".feature-highlight-modal p").exists());
-    assert.equal(wrapper.find(".feature-highlight-modal p").text(), "foo");
+    assert.ok(
+      wrapper.find(".feature-highlight-modal .content-wrapper").exists()
+    );
+    assert.equal(
+      wrapper.find(".feature-highlight-modal .content-wrapper").text(),
+      "foo"
+    );
   });
 
   it("should open a modal", () => {
     assert.ok(wrapper.find(".feature-highlight-modal.closed").exists());
     wrapper.find(".toggle-button").simulate("click");
     assert.ok(wrapper.find(".feature-highlight-modal.opened").exists());
-    wrapper.find(".icon-dismiss").simulate("click");
+    wrapper.find("moz-button").simulate("click");
     assert.ok(wrapper.find(".feature-highlight-modal.closed").exists());
   });
 
@@ -75,18 +80,5 @@ describe("<FeatureHighlight>", () => {
 
     assert.calledOnce(outsideClickCallback);
     assert(wrapper.find(".feature-highlight-modal.closed").exists);
-  });
-});
-
-describe("<SponsoredContentHighlight>", () => {
-  let wrapper;
-
-  beforeEach(() => {
-    wrapper = mount(<SponsoredContentHighlight />);
-  });
-
-  it("should render", () => {
-    assert.ok(wrapper.exists());
-    assert.ok(wrapper.find(".sponsored-content-highlight").exists());
   });
 });

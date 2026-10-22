@@ -1,6 +1,4 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*-
- * vim: set ts=8 sts=2 et sw=2 tw=80:
- *
+/*
  * Copyright 2016 Mozilla Foundation
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -69,7 +67,7 @@ void BaseCompiler::moveF32(RegF32 src, RegF32 dest) {
   }
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 void BaseCompiler::moveV128(RegV128 src, RegV128 dest) {
   if (src != dest) {
     masm.moveSimd128(src, dest);
@@ -107,7 +105,7 @@ inline void BaseCompiler::move<RegPtr>(RegPtr src, RegPtr dest) {
   movePtr(src, dest);
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 template <>
 inline void BaseCompiler::move<RegV128>(RegV128 src, RegV128 dest) {
   moveV128(src, dest);
@@ -191,7 +189,7 @@ RegF64 BaseCompiler::captureReturnedF64(const FunctionCall& call) {
   return r;
 }
 
-#ifdef ENABLE_WASM_SIMD
+#ifdef ENABLE_JIT_SIMD
 RegV128 BaseCompiler::captureReturnedV128(const FunctionCall& call) {
   RegV128 r = RegV128(ReturnSimd128Reg);
   MOZ_ASSERT(isAvailableV128(r));
@@ -211,7 +209,27 @@ RegRef BaseCompiler::captureReturnedRef() {
 //
 // Miscellaneous.
 
-void BaseCompiler::trap(Trap t) const { masm.wasmTrap(t, trapSiteDesc()); }
+void BaseCompiler::trap(Trap t) {
+  masm.wasmTrap(t, trapSiteDesc());
+
+  if (MOZ_LIKELY(!compilerEnv_.debugEnabled())) {
+    return;
+  }
+
+  masm.propagateOOM(
+      createStackMap(mozilla::Some(t), HasDebugFrameWithLiveRefs::Maybe));
+}
+
+void BaseCompiler::trap(Trap t, const TrapSiteDesc& trapSite,
+                        StackMap* stackMap) {
+  // TODO: ideally we should check that the resumability of `t` was taken into
+  // account when constructing `stackMap`.
+  masm.wasmTrap(t, trapSite);
+
+  if (stackMap && !stackMaps_->add(masm.currentOffset(), stackMap)) {
+    masm.setOOM();
+  }
+}
 
 void BaseCompiler::cmp64Set(Assembler::Condition cond, RegI64 lhs, RegI64 rhs,
                             RegI32 dest) {

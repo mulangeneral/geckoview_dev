@@ -12,6 +12,7 @@ import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.platform.ComposeView
+import androidx.compose.ui.platform.ViewCompositionStrategy
 import androidx.fragment.app.Fragment
 import mozilla.components.lib.auth.AuthenticationDelegate
 import mozilla.components.lib.auth.BiometricPromptAuth
@@ -24,15 +25,11 @@ import org.mozilla.focus.searchwidget.ExternalIntentNavigation
 import org.mozilla.focus.state.AppAction
 import org.mozilla.focus.ui.theme.FocusTheme
 
-/**
- * Fragment used to display biometric authentication when the app is locked.
- */
+/** Fragment used to display biometric authentication when the app is locked. */
 class BiometricAuthenticationFragment : Fragment(), AuthenticationDelegate {
-    @VisibleForTesting
-    internal val biometricPromptAuth = ViewBoundFeatureWrapper<BiometricPromptAuth>()
+    @VisibleForTesting internal val biometricPromptAuth = ViewBoundFeatureWrapper<BiometricPromptAuth>()
 
-    @VisibleForTesting
-    internal val biometricErrorText = mutableStateOf("")
+    @VisibleForTesting internal val biometricErrorText = mutableStateOf("")
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -42,6 +39,7 @@ class BiometricAuthenticationFragment : Fragment(), AuthenticationDelegate {
         return ComposeView(requireContext()).apply {
             setBiometricPrompt(this)
             isTransitionGroup = true
+            setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnViewTreeLifecycleDestroyed)
         }
     }
 
@@ -60,10 +58,12 @@ class BiometricAuthenticationFragment : Fragment(), AuthenticationDelegate {
             }
         }
     }
+
     override fun onResume() {
         super.onResume()
         hideToolbar()
     }
+
     override fun onAuthError(errorText: String) {
         biometricErrorText.value = errorText
     }
@@ -92,11 +92,12 @@ class BiometricAuthenticationFragment : Fragment(), AuthenticationDelegate {
 
     private fun setBiometricPrompt(view: View) {
         biometricPromptAuth.set(
-            feature = BiometricPromptAuth(
-                context = requireContext(),
-                fragment = this,
-                authenticationDelegate = this,
-            ),
+            feature =
+                BiometricPromptAuth(
+                    context = requireContext(),
+                    fragment = this,
+                    authenticationDelegate = this,
+                ),
             owner = this,
             view = view,
         )
@@ -122,9 +123,7 @@ class BiometricAuthenticationFragment : Fragment(), AuthenticationDelegate {
     companion object {
         const val FRAGMENT_TAG = "biometric-authentication-fragment"
 
-        /**
-         * Creates a [BiometricAuthenticationFragment] with redirection to a destination from @param [bundle].
-         */
+        /** Creates a [BiometricAuthenticationFragment] with redirection to a destination from @param [bundle]. */
         fun createWithDestinationData(bundle: Bundle? = null): BiometricAuthenticationFragment {
             val fragment = BiometricAuthenticationFragment()
             fragment.arguments = bundle

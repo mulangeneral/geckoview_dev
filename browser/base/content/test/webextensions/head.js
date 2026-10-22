@@ -1,5 +1,6 @@
 ChromeUtils.defineESModuleGetters(this, {
   AddonTestUtils: "resource://testing-common/AddonTestUtils.sys.mjs",
+  ExtensionParent: "resource://gre/modules/ExtensionParent.sys.mjs",
   ExtensionsUI: "resource:///modules/ExtensionsUI.sys.mjs",
 });
 
@@ -9,11 +10,7 @@ const BASE = getRootDirectory(gTestPath).replace(
 );
 
 ChromeUtils.defineLazyGetter(this, "Management", () => {
-  // eslint-disable-next-line no-shadow
-  const { Management } = ChromeUtils.importESModule(
-    "resource://gre/modules/Extension.sys.mjs"
-  );
-  return Management;
+  return ExtensionParent.apiManager;
 });
 
 let { CustomizableUITestUtils } = ChromeUtils.importESModule(
@@ -59,6 +56,14 @@ function promisePopupNotificationShown(name) {
     function popupshown() {
       let notification = PopupNotifications.getNotification(name);
       if (!notification) {
+        return;
+      }
+      // Don't use PopupNotifications.isPanelOpen here: it also returns true
+      // while the panel is still in the "showing" state, in which case the
+      // popup frame isn't open yet and its contents aren't focusable.
+      let panelState = PopupNotifications.panel.state;
+      if (panelState != "open") {
+        info(`Ignoring popupshown for ${name}, panel state: ${panelState}`);
         return;
       }
 
@@ -128,7 +133,7 @@ function promiseInstallEvent(addon, event) {
  *
  * @param {string} url
  *        URL of the .xpi file to install
- * @param {Object?} installTelemetryInfo
+ * @param {object?} installTelemetryInfo
  *        an optional object that contains additional details used by the telemetry events.
  *
  * @returns {Promise}
@@ -196,8 +201,14 @@ function waitAboutAddonsViewLoaded(doc) {
 /**
  * Trigger an action from the page options menu.
  */
-function triggerPageOptionsAction(win, action) {
-  win.document.querySelector(`#page-options [action="${action}"]`).click();
+async function triggerPageOptionsAction(win, action) {
+  let button = win.document.querySelector(`#page-options [action="${action}"]`);
+  // Button is temporarily disabled on click. Wait in case we just clicked.
+  await TestUtils.waitForCondition(
+    () => !button.disabled,
+    "Wait for button to become enabled"
+  );
+  button.click();
 }
 
 function isDefaultIcon(icon) {
@@ -215,7 +226,7 @@ function isDefaultIcon(icon) {
  *        regular expression it is tested against the icon url, and if
  *        it is a function, it is called with the icon url and returns
  *        true if the url is correct.
- * @param {array} permissions
+ * @param {Array} permissions
  *        The expected entries in the permissions list.  Each element
  *        in this array is itself a 2-element array with the string key
  *        for the item (e.g., "webext-perms-description-foo") and an
@@ -487,8 +498,6 @@ async function interactiveUpdateTest(autoUpdate, checkFn) {
     ],
   });
 
-  AddonTestUtils.hookAMTelemetryEvents();
-
   // Trigger an update check, manually applying the update if we're testing
   // without auto-update.
   async function triggerUpdate(win, addon) {
@@ -585,12 +594,6 @@ async function interactiveUpdateTest(autoUpdate, checkFn) {
   await addon.uninstall();
   await SpecialPowers.popPrefEnv();
 
-  const collectedUpdateEvents = AddonTestUtils.getAMTelemetryEvents().filter(
-    evt => {
-      return evt.method === "update";
-    }
-  );
-
   const expectedSteps = [
     // First update is cancelled on the permission prompt.
     "started",
@@ -606,12 +609,6 @@ async function interactiveUpdateTest(autoUpdate, checkFn) {
     "completed",
   ];
 
-  Assert.deepEqual(
-    expectedSteps,
-    collectedUpdateEvents.map(evt => evt.extra.step),
-    "Got the expected sequence on update telemetry events"
-  );
-
   let gleanEvents = AddonTestUtils.getAMGleanEvents("update");
   Services.fog.testResetFOG();
 
@@ -619,23 +616,6 @@ async function interactiveUpdateTest(autoUpdate, checkFn) {
     expectedSteps,
     gleanEvents.map(e => e.step),
     "Got the expected sequence on update Glean events."
-  );
-
-  ok(
-    collectedUpdateEvents.every(evt => evt.extra.addon_id === ID),
-    "Every update telemetry event should have the expected addon_id extra var"
-  );
-
-  ok(
-    collectedUpdateEvents.every(
-      evt => evt.extra.source === FAKE_INSTALL_SOURCE
-    ),
-    "Every update telemetry event should have the expected source extra var"
-  );
-
-  ok(
-    collectedUpdateEvents.every(evt => evt.extra.updated_from === "user"),
-    "Every update telemetry event should have the update_from extra var 'user'"
   );
 
   for (let e of gleanEvents) {
@@ -650,33 +630,24 @@ async function interactiveUpdateTest(autoUpdate, checkFn) {
       Assert.greater(parseInt(e.download_time), 0, "Valid download_time.");
     }
   }
+}
 
-  let hasPermissionsExtras = collectedUpdateEvents
-    .filter(evt => {
-      return evt.extra.step === "permissions_prompt";
-    })
-    .every(evt => {
-      return Number.isInteger(parseInt(evt.extra.num_strings, 10));
-    });
-
-  ok(
-    hasPermissionsExtras,
-    "Every 'permissions_prompt' update telemetry event should have the permissions extra vars"
-  );
-
-  let hasDownloadTimeExtras = collectedUpdateEvents
-    .filter(evt => {
-      return evt.extra.step === "download_completed";
-    })
-    .every(evt => {
-      const download_time = parseInt(evt.extra.download_time, 10);
-      return !isNaN(download_time) && download_time > 0;
-    });
-
-  ok(
-    hasDownloadTimeExtras,
-    "Every 'download_completed' update telemetry event should have a download_time extra vars"
-  );
+async function getCachedPermissions(extensionId) {
+  const NotFound = Symbol("extension ID not found in permissions cache");
+  try {
+    return await ExtensionParent.StartupCache.permissions.get(
+      extensionId,
+      () => {
+        // Throw error to prevent the key from being created.
+        throw NotFound;
+      }
+    );
+  } catch (e) {
+    if (e === NotFound) {
+      return null;
+    }
+    throw e;
+  }
 }
 
 // The tests in this directory install a bunch of extensions but they
@@ -693,6 +664,8 @@ add_setup(async function head_setup() {
   let addons = await AddonManager.getAllAddons();
   let existingAddons = new Set(addons.map(a => a.id));
 
+  let uuids = Services.prefs.getStringPref("extensions.webextensions.uuids");
+
   registerCleanupFunction(async function () {
     if (testCleanup) {
       await testCleanup();
@@ -708,5 +681,11 @@ add_setup(async function head_setup() {
         await addon.uninstall();
       }
     }
+    // Regression test for https://bugzilla.mozilla.org/show_bug.cgi?id=1974419
+    is(
+      Services.prefs.getStringPref("extensions.webextensions.uuids"),
+      uuids,
+      "No unexpected changes to extensions.webextensions.uuid"
+    );
   });
 });

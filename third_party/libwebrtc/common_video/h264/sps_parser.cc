@@ -10,18 +10,21 @@
 
 #include "common_video/h264/sps_parser.h"
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
+#include <span>
 #include <vector>
 
 #include "common_video/h264/h264_common.h"
 #include "rtc_base/bitstream_reader.h"
 
+namespace webrtc {
+
 namespace {
 constexpr int kScalingDeltaMin = -128;
 constexpr int kScaldingDeltaMax = 127;
 }  // namespace
-
-namespace webrtc {
 
 SpsParser::SpsState::SpsState() = default;
 SpsParser::SpsState::SpsState(const SpsState&) = default;
@@ -33,7 +36,7 @@ SpsParser::SpsState::~SpsState() = default;
 
 // Unpack RBSP and parse SPS state from the supplied buffer.
 std::optional<SpsParser::SpsState> SpsParser::ParseSps(
-    rtc::ArrayView<const uint8_t> data) {
+    std::span<const uint8_t> data) {
   std::vector<uint8_t> unpacked_buffer = H264::ParseRbsp(data);
   BitstreamReader reader(unpacked_buffer);
   return ParseSpsUpToVui(reader);
@@ -66,6 +69,9 @@ std::optional<SpsParser::SpsState> SpsParser::ParseSpsUpToVui(
   reader.ConsumeBits(16);
   // seq_parameter_set_id: ue(v)
   sps.id = reader.ReadExponentialGolomb();
+  if (!reader.Ok() || sps.id > H264::kMaxSpsId) {
+    return std::nullopt;
+  }
   sps.separate_colour_plane_flag = 0;
   // See if profile_idc has chroma format information.
   if (profile_idc == 100 || profile_idc == 110 || profile_idc == 122 ||

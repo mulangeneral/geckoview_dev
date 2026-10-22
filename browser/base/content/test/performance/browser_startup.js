@@ -34,6 +34,7 @@ const startupPhases = {
         "resource://gre/modules/AppConstants.sys.mjs",
         "resource://gre/modules/ActorManagerParent.sys.mjs",
         "resource://gre/modules/CustomElementsListener.sys.mjs",
+        "resource://gre/modules/LaunchOnLogin.sys.mjs",
         "resource://gre/modules/MainProcessSingleton.sys.mjs",
         "resource://gre/modules/XPCOMUtils.sys.mjs",
       ]),
@@ -60,16 +61,15 @@ const startupPhases = {
         "resource:///modules/AboutNewTab.sys.mjs",
         "resource:///modules/BrowserUsageTelemetry.sys.mjs",
         "resource:///modules/ContentCrashHandlers.sys.mjs",
-        "resource:///modules/ShellService.sys.mjs",
+        "moz-src:///browser/components/shell/ShellService.sys.mjs",
         "resource://gre/modules/NewTabUtils.sys.mjs",
         "resource://gre/modules/PageThumbs.sys.mjs",
         "resource://gre/modules/PlacesUtils.sys.mjs",
         "resource://gre/modules/Preferences.sys.mjs",
-        "resource://gre/modules/SearchService.sys.mjs",
+        "moz-src:///toolkit/components/search/SearchService.sys.mjs",
         // Sqlite.sys.mjs commented out because of bug 1828735.
         // "resource://gre/modules/Sqlite.sys.mjs"
       ]),
-      services: new Set(["@mozilla.org/browser/search-service;1"]),
     },
   },
 
@@ -84,7 +84,7 @@ const startupPhases = {
         // "resource:///modules/BrowserWindowTracker.sys.mjs",
         "resource://gre/modules/BookmarkHTMLUtils.sys.mjs",
         "resource://gre/modules/Bookmarks.sys.mjs",
-        "resource://gre/modules/ContextualIdentityService.sys.mjs",
+        "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs",
         "resource://gre/modules/FxAccounts.sys.mjs",
         "resource://gre/modules/FxAccountsStorage.sys.mjs",
         "resource://gre/modules/PlacesSyncUtils.sys.mjs",
@@ -108,19 +108,20 @@ const startupPhases = {
   },
 };
 
-if (AppConstants.platform == "win") {
-  // On Windows we call checkForLaunchOnLogin early in startup.
-  startupPhases["before profile selection"].allowlist.modules.add(
+if (AppConstants.platform != "linux") {
+  let modules = startupPhases["before profile selection"].allowlist.modules;
+  modules.add(
     "moz-src:///browser/components/shell/StartupOSIntegration.sys.mjs"
   );
 }
 
 if (
   Services.prefs.getBoolPref("browser.startup.blankWindow") &&
-  Services.prefs.getCharPref(
+  (Services.prefs.getCharPref(
     "extensions.activeThemeID",
     "default-theme@mozilla.org"
-  ) == "default-theme@mozilla.org"
+  ) == "default-theme@mozilla.org" ||
+    AppConstants.MOZ_DEV_EDITION) // See bug 1979209.
 ) {
   startupPhases["before profile selection"].allowlist.modules.add(
     "resource://gre/modules/XULStore.sys.mjs"
@@ -129,7 +130,7 @@ if (
 
 if (AppConstants.MOZ_CRASHREPORTER) {
   startupPhases["before handling user events"].denylist.modules.add(
-    "resource://gre/modules/CrashSubmit.sys.mjs"
+    "moz-src:///toolkit/crashreporter/CrashSubmit.sys.mjs"
   );
 }
 // Bug 1798750

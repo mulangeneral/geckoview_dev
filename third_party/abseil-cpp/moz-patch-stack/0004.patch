@@ -1,26 +1,38 @@
-From: Andreas Pehrson <apehrson@mozilla.com>
-Date: Thu, 3 Nov 2022 07:37:00 +0000
-Subject: Bug 1833541 - Correctly check for std::launder support in abseil.
- r=webrtc-reviewers,ng
+From: Ryan VanderMeulen <rvandermeulen@mozilla.com>
+Date: Sun, 23 Aug 2026 13:55:24 -0400
+Subject: Bug 1974813, Bug 1965053 - abseil-cpp compiler flag adjustments in
+ absl.gni.
 
-Sent upstream at https://github.com/abseil/abseil-cpp/pull/1448
-
-Differential Revision: https://phabricator.services.mozilla.com/D178274
-Mercurial Revision: https://hg.mozilla.org/mozilla-central/rev/d976369464663a9147b82c82436afcaab1f61aec
+Drops the prevent_unsafe_narrowing config, which chromium/build now includes
+automatically, and silences -Wcomma and -Wtautological-type-limit-compare.
+Those fire on deliberate comma expressions and on portability range checks that
+are tautological only on 64-bit; abseil does not enable either warning.
 ---
- abseil-cpp/absl/functional/internal/any_invocable.h | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
+ abseil-cpp/absl.gni | 14 ++++++++++++++
+ 1 file changed, 14 insertions(+)
 
-diff --git a/abseil-cpp/absl/functional/internal/any_invocable.h b/abseil-cpp/absl/functional/internal/any_invocable.h
-index c2d8cd4727a..366d94c4fe1 100644
---- a/abseil-cpp/absl/functional/internal/any_invocable.h
-+++ b/abseil-cpp/absl/functional/internal/any_invocable.h
-@@ -205,7 +205,7 @@ union TypeErasedState {
- template <class T>
- T& ObjectInLocalStorage(TypeErasedState* const state) {
-   // We launder here because the storage may be reused with the same type.
--#if defined(__cpp_lib_launder) && __cpp_lib_launder >= 201606L
-+#if ABSL_INTERNAL_CPLUSPLUS_LANG >= 201703L && __cpp_lib_launder >= 201606L
-   return *std::launder(reinterpret_cast<T*>(&state->storage));
- #elif ABSL_HAVE_BUILTIN(__builtin_launder)
-   return *__builtin_launder(reinterpret_cast<T*>(&state->storage));
+diff --git a/abseil-cpp/absl.gni b/abseil-cpp/absl.gni
+index 3632789e941..8cb6e8b61d4 100644
+--- a/abseil-cpp/absl.gni
++++ b/abseil-cpp/absl.gni
+@@ -38,6 +38,20 @@ template("absl_source_set") {
+         "//abseil-cpp:absl_define_config",
+       ]
+ 
++      if (moz_webrtc_build) {
++        configs -= [ "//chromium/build/config/compiler:prevent_unsafe_narrowing" ]
++
++        # Silence -Wcomma / -Wtautological-type-limit-compare spam from
++        # third-party abseil sources. See bug 1965053.
++        if (!defined(cflags_cc)) {
++          cflags_cc = []
++        }
++        cflags_cc += [
++          "-Wno-comma",
++          "-Wno-tautological-type-limit-compare",
++        ]
++      }
++
+       if (!defined(defines)) {
+         defines = []
+       }

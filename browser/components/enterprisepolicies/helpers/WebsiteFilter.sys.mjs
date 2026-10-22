@@ -30,6 +30,11 @@ const PREF_LOGLEVEL = "browser.policies.loglevel";
 
 const lazy = {};
 
+ChromeUtils.defineESModuleGetters(lazy, {
+  PolicyFailures: "resource://gre/modules/PoliciesHelpers.sys.mjs",
+  ReaderMode: "moz-src:///toolkit/components/reader/ReaderMode.sys.mjs",
+});
+
 ChromeUtils.defineLazyGetter(lazy, "log", () => {
   let { ConsoleAPI } = ChromeUtils.importESModule(
     "resource://gre/modules/Console.sys.mjs"
@@ -43,7 +48,20 @@ ChromeUtils.defineLazyGetter(lazy, "log", () => {
   });
 });
 
+/**
+ * Reports an operation of a policy that failed, so that the policy is flagged
+ * as only partially applied in about:policies.
+ *
+ * @param {string} message A description of what failed.
+ */
+function reportFailure(message) {
+  lazy.log.error(message);
+  lazy.PolicyFailures.report("WebsiteFilter", message);
+}
+
 export let WebsiteFilter = {
+  _observerAdded: false,
+
   init(blocklist, exceptionlist) {
     let blockArray = [],
       exceptionArray = [];
@@ -56,7 +74,7 @@ export let WebsiteFilter = {
           `Pattern added to WebsiteFilter. Block: ${blocklist[i]}`
         );
       } catch (e) {
-        lazy.log.error(
+        reportFailure(
           `Invalid pattern on WebsiteFilter. Block: ${blocklist[i]}`
         );
       }
@@ -72,7 +90,7 @@ export let WebsiteFilter = {
           `Pattern added to WebsiteFilter. Exception: ${exceptionlist[i]}`
         );
       } catch (e) {
-        lazy.log.error(
+        reportFailure(
           `Invalid pattern on WebsiteFilter. Exception: ${exceptionlist[i]}`
         );
       }
@@ -102,7 +120,11 @@ export let WebsiteFilter = {
     }
     // We have to do this to catch 30X redirects.
     // See bug 456957.
-    Services.obs.addObserver(this, "http-on-examine-response", true);
+    if (!this._observerAdded) {
+      this._observerAdded = true;
+      // We rely on weak references, so we never remove this observer.
+      Services.obs.addObserver(this, "http-on-examine-response", true);
+    }
   },
 
   shouldLoad(contentLocation, loadInfo) {
@@ -110,14 +132,14 @@ export let WebsiteFilter = {
     let url = contentLocation.spec.toLowerCase();
     if (contentLocation.scheme == "view-source") {
       url = contentLocation.pathQueryRef;
-    } else if (url.startsWith("about:reader?url=")) {
-      url = decodeURIComponent(url.substr(17));
+    } else if (url.startsWith("about:reader?")) {
+      url = lazy.ReaderMode.getOriginalUrl(url);
     }
     if (
       contentType == Ci.nsIContentPolicy.TYPE_DOCUMENT ||
       contentType == Ci.nsIContentPolicy.TYPE_SUBDOCUMENT
     ) {
-      if (!this.isAllowed(url)) {
+      if (!url || !this.isAllowed(url)) {
         return Ci.nsIContentPolicy.REJECT_POLICY;
       }
     }
@@ -159,14 +181,30 @@ export let WebsiteFilter = {
     return this.QueryInterface(iid);
   },
   isAllowed(url) {
-    if (this._blockPatterns?.matches(url.toLowerCase())) {
+    let normalizedURL = this.normalizeURL(url);
+    // A URL we are about to load should always parse, so this is unexpected.
+    // Block it rather than let an unparseable URL skip the filter.
+    if (normalizedURL == null) {
+      return false;
+    }
+    if (this._blockPatterns?.matches(normalizedURL)) {
       if (
         !this._exceptionsPatterns ||
-        !this._exceptionsPatterns.matches(url.toLowerCase())
+        !this._exceptionsPatterns.matches(normalizedURL)
       ) {
         return false;
       }
     }
     return true;
+  },
+  normalizeURL(url) {
+    let parsed = URL.parse(url);
+    if (!parsed) {
+      return null;
+    }
+    if (parsed.hostname.endsWith(".")) {
+      parsed.hostname = parsed.hostname.replace(/\.+$/, "");
+    }
+    return parsed.href.toLowerCase();
   },
 };

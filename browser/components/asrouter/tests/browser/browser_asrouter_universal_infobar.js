@@ -6,11 +6,14 @@
 const { InfoBar } = ChromeUtils.importESModule(
   "resource:///modules/asrouter/InfoBar.sys.mjs"
 );
-const { CFRMessageProvider } = ChromeUtils.importESModule(
-  "resource:///modules/asrouter/CFRMessageProvider.sys.mjs"
-);
 const { ASRouter } = ChromeUtils.importESModule(
   "resource:///modules/asrouter/ASRouter.sys.mjs"
+);
+const { SpecialMessageActions } = ChromeUtils.importESModule(
+  "resource://messaging-system/lib/SpecialMessageActions.sys.mjs"
+);
+const { RemoteL10n } = ChromeUtils.importESModule(
+  "resource:///modules/asrouter/RemoteL10n.sys.mjs"
 );
 
 const UNIVERSAL_MESSAGE = {
@@ -22,30 +25,63 @@ const UNIVERSAL_MESSAGE = {
   },
 };
 
+// TODO: It might be cleaner to have a testing version of
+// removeUniversalInfobars defined on InfoBar that does this cleanup?
 const cleanupInfobars = () => {
   InfoBar._universalInfobars = [];
   InfoBar._activeInfobar = null;
+  if (InfoBar._observingWindowOpened) {
+    InfoBar._observingWindowOpened = false;
+    Services.obs.removeObserver(InfoBar, "domwindowopened");
+  }
 };
 
+const makeFakeWin = ({
+  closed = false,
+  toolbarVisible = true,
+  taskbarTab = false,
+  readyState = "complete",
+  selectedBrowser,
+} = {}) => {
+  const win = {
+    closed,
+    toolbar: { visible: toolbarVisible },
+    document: {
+      readyState,
+      documentElement: {
+        hasAttribute: name => (name === "taskbartab" ? taskbarTab : false),
+      },
+    },
+    gBrowser: { selectedBrowser },
+  };
+
+  const browser = { documentGlobal: win, id: selectedBrowser };
+  win.gBrowser = { selectedBrowser: browser };
+  return win;
+};
+
+add_setup(async function () {
+  const sandbox = sinon.createSandbox();
+  sandbox
+    .stub(PrivateBrowsingUtils, "isWindowPrivate")
+    .callsFake(win => !!win?.isPrivate);
+
+  registerCleanupFunction(() => {
+    sandbox.restore();
+  });
+});
+
 add_task(async function showNotificationAllWindows() {
-  let fakeNotification = { showNotification: sinon.stub().resolves() };
+  const sandbox = sinon.createSandbox();
+  let fakeNotification = { showNotification: sandbox.stub().resolves() };
   let fakeWins = [
-    {
-      gBrowser: { selectedBrowser: "win1" },
-      document: { readyState: "complete" },
-    },
-    {
-      gBrowser: { selectedBrowser: "win2" },
-      document: { readyState: "complete" },
-    },
-    {
-      gBrowser: { selectedBrowser: "win3" },
-      document: { readyState: "complete" },
-    },
+    makeFakeWin({ selectedBrowser: "win1" }),
+    makeFakeWin({ selectedBrowser: "win2" }),
+    makeFakeWin({ selectedBrowser: "win3" }),
   ];
 
-  sinon.stub(InfoBar, "maybeLoadCustomElement");
-  sinon.stub(InfoBar, "maybeInsertFTL");
+  sandbox.stub(InfoBar, "maybeLoadCustomElement");
+  sandbox.stub(InfoBar, "maybeInsertFTL");
 
   let origWinManager = Services.wm;
   // Using sinon.stub won’t work here, because Services.wm is a frozen,
@@ -60,13 +96,13 @@ add_task(async function showNotificationAllWindows() {
   await InfoBar.showNotificationAllWindows(fakeNotification);
 
   Assert.equal(fakeNotification.showNotification.callCount, 3);
-  Assert.ok(fakeNotification.showNotification.calledWith("win1"));
-  Assert.ok(fakeNotification.showNotification.calledWith("win2"));
-  Assert.ok(fakeNotification.showNotification.calledWith("win3"));
+  Assert.equal(fakeNotification.showNotification.getCall(0).args[0].id, "win1");
+  Assert.equal(fakeNotification.showNotification.getCall(1).args[0].id, "win2");
+  Assert.equal(fakeNotification.showNotification.getCall(2).args[0].id, "win3");
 
   // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
   Object.defineProperty(Services, "wm", {
     value: origWinManager,
     configurable: true,
@@ -75,14 +111,15 @@ add_task(async function showNotificationAllWindows() {
 });
 
 add_task(async function removeUniversalInfobars() {
+  const sandbox = sinon.createSandbox();
   let browser = BrowserWindowTracker.getTopWindow().gBrowser.selectedBrowser;
-  let origBox = browser.ownerGlobal.gNotificationBox;
-  browser.ownerGlobal.gNotificationBox = {
-    appendNotification: sinon.stub().resolves({}),
-    removeNotification: sinon.stub(),
+  let origBox = browser.documentGlobal.gNotificationBox;
+  browser.documentGlobal.gNotificationBox = {
+    appendNotification: sandbox.stub().resolves(document.createElement("span")),
+    removeNotification: sandbox.stub(),
   };
 
-  sinon
+  sandbox
     .stub(InfoBar, "showNotificationAllWindows")
     .callsFake(async notification => {
       await notification.showNotification(browser);
@@ -91,14 +128,14 @@ add_task(async function removeUniversalInfobars() {
   let notification = await InfoBar.showInfoBarMessage(
     browser,
     UNIVERSAL_MESSAGE,
-    sinon.stub()
+    sandbox.stub()
   );
 
   Assert.equal(InfoBar._universalInfobars.length, 1);
   notification.removeUniversalInfobars();
 
   Assert.ok(
-    browser.ownerGlobal.gNotificationBox.removeNotification.calledWith(
+    browser.documentGlobal.gNotificationBox.removeNotification.calledWith(
       notification.notification
     )
   );
@@ -107,26 +144,27 @@ add_task(async function removeUniversalInfobars() {
 
   // Cleanup
   cleanupInfobars();
-  browser.ownerGlobal.gNotificationBox = origBox;
-  sinon.restore();
+  browser.documentGlobal.gNotificationBox = origBox;
+  sandbox.restore();
 });
 
 add_task(async function initialUniversal_showsAllWindows_andSendsTelemetry() {
+  const sandbox = sinon.createSandbox();
   let browser = BrowserWindowTracker.getTopWindow().gBrowser.selectedBrowser;
-  let origBox = browser.ownerGlobal.gNotificationBox;
-  browser.ownerGlobal.gNotificationBox = {
-    appendNotification: sinon.stub().resolves({}),
-    removeNotification: sinon.stub(),
+  let origBox = browser.documentGlobal.gNotificationBox;
+  browser.documentGlobal.gNotificationBox = {
+    appendNotification: sandbox.stub().resolves(document.createElement("span")),
+    removeNotification: sandbox.stub(),
   };
 
-  let showAll = sinon
+  let showAll = sandbox
     .stub(InfoBar, "showNotificationAllWindows")
     .callsFake(async notification => {
       await notification.showNotification(browser);
     });
 
-  let dispatch1 = sinon.stub();
-  let dispatch2 = sinon.stub();
+  let dispatch1 = sandbox.stub();
+  let dispatch2 = sandbox.stub();
 
   await InfoBar.showInfoBarMessage(browser, UNIVERSAL_MESSAGE, dispatch1);
   await InfoBar.showInfoBarMessage(browser, UNIVERSAL_MESSAGE, dispatch2, true);
@@ -143,26 +181,23 @@ add_task(async function initialUniversal_showsAllWindows_andSendsTelemetry() {
 
   // Cleanup
   cleanupInfobars();
-  browser.ownerGlobal.gNotificationBox = origBox;
-  sinon.restore();
+  browser.documentGlobal.gNotificationBox = origBox;
+  sandbox.restore();
 });
 
 add_task(async function observe_domwindowopened_withLoadEvent() {
-  sinon.stub(PrivateBrowsingUtils, "isWindowPrivate").returns(false);
-  let stub = sinon.stub(InfoBar, "showInfoBarMessage").resolves();
+  const sandbox = sinon.createSandbox();
+  let stub = sandbox.stub(InfoBar, "showInfoBarMessage").resolves();
 
   InfoBar._activeInfobar = {
     message: { content: { type: "universal" } },
-    dispatch: sinon.stub(),
+    dispatch: sandbox.stub(),
   };
 
-  let subject = {
-    document: { readyState: "loading" },
-    gBrowser: { selectedBrowser: "b" },
-    addEventListener(event, cb) {
-      subject.document.readyState = "complete";
-      cb();
-    },
+  let subject = makeFakeWin({ readyState: "loading", selectedBrowser: "b" });
+  subject.addEventListener = function (event, cb) {
+    subject.document.readyState = "complete";
+    cb();
   };
 
   InfoBar.observe(subject, "domwindowopened");
@@ -173,15 +208,16 @@ add_task(async function observe_domwindowopened_withLoadEvent() {
 
   // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
 });
 
 add_task(async function observe_domwindowopened() {
-  let stub = sinon.stub(InfoBar, "showInfoBarMessage").resolves();
+  const sandbox = sinon.createSandbox();
+  let stub = sandbox.stub(InfoBar, "showInfoBarMessage").resolves();
 
   InfoBar._activeInfobar = {
     message: { content: { type: "universal" } },
-    dispatch: sinon.stub(),
+    dispatch: sandbox.stub(),
   };
 
   let win = BrowserWindowTracker.getTopWindow();
@@ -192,29 +228,30 @@ add_task(async function observe_domwindowopened() {
 
   // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
 });
 
 add_task(async function observe_skips_nonUniversal() {
-  let stub = sinon.stub(InfoBar, "showInfoBarMessage").resolves();
-  sinon.stub(PrivateBrowsingUtils, "isWindowPrivate").returns(false);
+  const sandbox = sinon.createSandbox();
+  let stub = sandbox.stub(InfoBar, "showInfoBarMessage").resolves();
   InfoBar._activeInfobar = {
     message: { content: { type: "global" } },
-    dispatch: sinon.stub(),
+    dispatch: sandbox.stub(),
   };
   InfoBar.observe({}, "domwindowopened");
   Assert.ok(stub.notCalled);
 
   // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
 });
 
 add_task(async function infobarCallback_dismissed_universal() {
+  const sandbox = sinon.createSandbox();
   const browser = BrowserWindowTracker.getTopWindow().gBrowser.selectedBrowser;
-  const dispatch = sinon.stub();
+  const dispatch = sandbox.stub();
 
-  sinon
+  sandbox
     .stub(InfoBar, "showNotificationAllWindows")
     .callsFake(async notif => await notif.showNotification(browser));
 
@@ -234,7 +271,7 @@ add_task(async function infobarCallback_dismissed_universal() {
 
   // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
 });
 
 add_task(async function removeObserver_on_removeUniversalInfobars() {
@@ -269,27 +306,24 @@ add_task(async function removeObserver_on_removeUniversalInfobars() {
     "removeObserver was invoked for domwindowopened"
   );
 
-  // Cleanup
+  // Cleanup. Make sure we remove the observer that removeSpy left behind.
   Services.obs = origObs;
-  sandbox.restore();
+  InfoBar._observingWindowOpened = true;
   cleanupInfobars();
+  sandbox.restore();
 });
 
 add_task(async function universalInfobar_persists_original_window_closure() {
-  sinon.stub(PrivateBrowsingUtils, "isWindowPrivate").returns(false);
-
+  const sandbox = sinon.createSandbox();
   // Fake window so we can safely close it
-  let fakeWindow = {
-    closed: false,
-    gBrowser: { selectedBrowser: "win1" },
-  };
+  let fakeWindow = makeFakeWin({ selectedBrowser: "win1" });
 
   InfoBar._activeInfobar = {
     message: UNIVERSAL_MESSAGE,
-    dispatch: sinon.stub(),
+    dispatch: sandbox.stub(),
   };
   InfoBar._universalInfobars = [
-    { box: { ownerGlobal: fakeWindow }, notification: {} },
+    { box: { documentGlobal: fakeWindow }, notification: {} },
   ];
 
   Assert.ok(InfoBar._activeInfobar, "Got a universal infobar");
@@ -302,19 +336,582 @@ add_task(async function universalInfobar_persists_original_window_closure() {
     "_activeInfobar should persist through window closure"
   );
 
-  let fakeNewWindow = {
-    closed: false,
-    document: { readyState: "complete" },
-    gBrowser: { selectedBrowser: "win2" },
-  };
+  let fakeNewWindow = makeFakeWin({ selectedBrowser: "win2" });
 
-  let showInfobarStub = sinon.stub(InfoBar, "showInfoBarMessage").resolves();
+  makeFakeWin({ selectedBrowser: "win2" });
+
+  let showInfobarStub = sandbox.stub(InfoBar, "showInfoBarMessage").resolves();
   InfoBar.observe(fakeNewWindow, "domwindowopened");
   Assert.ok(
     showInfobarStub.calledOnce,
     "New window should receive the universal infobar"
   );
 
+  // Cleanup
   cleanupInfobars();
-  sinon.restore();
+  sandbox.restore();
+});
+
+add_task(async function test_universalInfobar_skips_popup_window() {
+  const sandbox = sinon.createSandbox();
+  const popupWin = makeFakeWin({
+    toolbarVisible: false, // Simulate a popup window
+    selectedBrowser: "popup-win",
+  });
+
+  const dispatch = sandbox.stub();
+  const infobar = await InfoBar.showInfoBarMessage(
+    popupWin.gBrowser.selectedBrowser,
+    UNIVERSAL_MESSAGE,
+    dispatch
+  );
+
+  Assert.equal(infobar, null, "Infobar not shown in popup window");
+  Assert.equal(dispatch.callCount, 0, "No impression sent");
+
+  // Cleanup
+  cleanupInfobars();
+  sandbox.restore();
+});
+
+add_task(async function test_universalInfobar_skips_taskbar_window() {
+  const sandbox = sinon.createSandbox();
+  const win = BrowserWindowTracker.getTopWindow();
+  win.document.documentElement.setAttribute("taskbartab", "");
+
+  const dispatch = sandbox.stub();
+  const infobar = await InfoBar.showInfoBarMessage(
+    win.gBrowser.selectedBrowser,
+    UNIVERSAL_MESSAGE,
+    dispatch
+  );
+
+  Assert.equal(infobar, null, "Infobar not visible for taskbar-tab window");
+  Assert.equal(dispatch.callCount, 0, "No impression sent");
+
+  win.document.documentElement.removeAttribute("taskbartab");
+  cleanupInfobars();
+  sandbox.restore();
+});
+
+add_task(async function universal_inline_anchor_dismiss_multiple_windows() {
+  const sandbox = sinon.createSandbox();
+  const win1 = BrowserWindowTracker.getTopWindow();
+  const browser1 = win1.gBrowser.selectedBrowser;
+  const win2 = await BrowserTestUtils.openNewBrowserWindow();
+  const browser2 = win2.gBrowser.selectedBrowser;
+
+  sandbox.stub(InfoBar, "maybeLoadCustomElement");
+  sandbox.stub(InfoBar, "maybeInsertFTL");
+
+  sandbox.stub(InfoBar, "showNotificationAllWindows").callsFake(async notif => {
+    await notif.showNotification(browser1);
+  });
+
+  sandbox
+    .stub(RemoteL10n, "formatLocalizableText")
+    .resolves('<a data-l10n-name="test">Open</a>');
+
+  const handle = sandbox.stub(SpecialMessageActions, "handleAction");
+
+  const message = {
+    id: "TEST_UNIVERSAL_INLINE_DISMISS_TWO_WINS",
+    content: {
+      type: "universal",
+      text: { string_id: "test" },
+      linkUrls: { test: "https://example.com/u" },
+      linkActions: {
+        test: {
+          type: "SET_PREF",
+          data: { pref: { name: "embedded-link-sma", value: true } },
+          dismiss: true,
+        },
+      },
+      buttons: [],
+    },
+  };
+
+  const dispatch1 = sandbox.stub();
+  const dispatch2 = sandbox.stub();
+
+  await InfoBar.showInfoBarMessage(browser1, message, dispatch1);
+
+  await InfoBar.showInfoBarMessage(
+    browser2,
+    message,
+    dispatch2,
+    true // universal in new window
+  );
+
+  const getNotification1 = () =>
+    win1.gNotificationBox.getNotificationWithValue(message.id);
+  const getNotification2 = () =>
+    win2.gNotificationBox.getNotificationWithValue(message.id);
+
+  await TestUtils.waitForCondition(
+    () => !!getNotification1(),
+    "Infobar present in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getNotification2(),
+    "Infobar present in window 2"
+  );
+
+  // Ignore impression pings.
+  dispatch1.resetHistory();
+  dispatch2.resetHistory();
+
+  const link = getNotification1()
+    .querySelector(':scope > [slot="message"]')
+    .querySelector('a[data-l10n-name="test"]');
+  Assert.ok(link, "Inline anchor exists in window 1");
+  EventUtils.synthesizeMouseAtCenter(link, {}, win1);
+
+  await TestUtils.waitForCondition(
+    () => !getNotification1(),
+    "Infobar removed in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !getNotification2(),
+    "Infobar removed in window 2"
+  );
+
+  Assert.equal(handle.callCount, 2, "Two SMAs handled (OPEN_URL and SET_PREF)");
+
+  Assert.ok(
+    dispatch1.calledWith(
+      sinon.match({
+        type: "INFOBAR_TELEMETRY",
+        data: sinon.match.has("event", "DISMISSED"),
+      })
+    ),
+    "DISMISSED telemetry send from Infobar where link was clicked"
+  );
+
+  Assert.ok(
+    !dispatch2.calledWith(
+      sinon.match({
+        type: "INFOBAR_TELEMETRY",
+        data: sinon.match.has("event", "DISMISSED"),
+      })
+    ),
+    "DISMISSED telemetry was not sent from other instance of the Infobar"
+  );
+
+  // Cleanup
+  win2.close();
+  sandbox.restore();
+  cleanupInfobars();
+});
+
+add_task(async function universal_dismiss_on_pref_change_multiple_windows() {
+  const sandbox = sinon.createSandbox();
+  const PREF = "messaging-system-action.dismissOnChange.universal";
+
+  const win1 = BrowserWindowTracker.getTopWindow();
+  const browser1 = win1.gBrowser.selectedBrowser;
+  const win2 = await BrowserTestUtils.openNewBrowserWindow();
+  const browser2 = win2.gBrowser.selectedBrowser;
+
+  sandbox.stub(InfoBar, "maybeLoadCustomElement");
+  sandbox.stub(InfoBar, "maybeInsertFTL");
+
+  sandbox.stub(InfoBar, "showNotificationAllWindows").callsFake(async notif => {
+    await notif.showNotification(browser1);
+  });
+
+  const message = {
+    id: "TEST_UNIVERSAL_DISMISS_ON_PREF_MULTI",
+    content: {
+      type: "universal",
+      text: "universal pref change",
+      dismissable: true,
+      buttons: [],
+      dismissOnPrefChange: PREF,
+    },
+  };
+
+  const dispatch1 = sandbox.stub();
+  const dispatch2 = sandbox.stub();
+
+  await InfoBar.showInfoBarMessage(browser1, message, dispatch1);
+  await InfoBar.showInfoBarMessage(browser2, message, dispatch2, true);
+
+  const getInfobar1 = () =>
+    win1.gNotificationBox.getNotificationWithValue(message.id);
+  const getInfobart2 = () =>
+    win2.gNotificationBox.getNotificationWithValue(message.id);
+
+  await TestUtils.waitForCondition(
+    () => !!getInfobar1(),
+    "Infobar present in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getInfobart2(),
+    "Infobar present in window 2"
+  );
+
+  // Ignore impression pings
+  dispatch1.resetHistory();
+  dispatch2.resetHistory();
+
+  Services.prefs.setBoolPref(PREF, true);
+
+  await TestUtils.waitForCondition(
+    () => !getInfobar1(),
+    "Infobar removed in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !getInfobart2(),
+    "Infobar removed in window 2"
+  );
+
+  // Cleanup
+  await BrowserTestUtils.closeWindow(win2);
+  sandbox.restore();
+  cleanupInfobars();
+  Services.prefs.clearUserPref(PREF);
+});
+
+const removeByIdInWin = (win, id) => {
+  const n = win.gNotificationBox.getNotificationWithValue(id);
+  if (n) {
+    win.gNotificationBox.removeNotification(n);
+  }
+};
+
+add_task(async function replace_universal_with_universal_across_two_windows() {
+  const sandbox = sinon.createSandbox();
+  const win1 = BrowserWindowTracker.getTopWindow();
+  const browser1 = win1.gBrowser.selectedBrowser;
+  const win2 = await BrowserTestUtils.openNewBrowserWindow();
+
+  const firstUniversalMessage = {
+    id: "TEST_REPLACE_UNIVERSAL_WITH_UNIVERSAL_FIRST",
+    content: {
+      type: "universal",
+      text: "first universal message",
+      buttons: [],
+      canReplace: ["TEST_REPLACE_UNIVERSAL_WITH_UNIVERSAL_SECOND"],
+    },
+  };
+
+  const secondUniversalMessage = {
+    id: "TEST_REPLACE_UNIVERSAL_WITH_UNIVERSAL_SECOND",
+    content: {
+      type: "universal",
+      text: "second universal message",
+      buttons: [],
+      canReplace: ["TEST_REPLACE_UNIVERSAL_WITH_UNIVERSAL_FIRST"],
+    },
+  };
+
+  const getFromWin1 = id => win1.gNotificationBox.getNotificationWithValue(id);
+  const getFromWin2 = id => win2.gNotificationBox.getNotificationWithValue(id);
+
+  const dispatchFirstUniversal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    browser1,
+    firstUniversalMessage,
+    dispatchFirstUniversal
+  );
+
+  await TestUtils.waitForCondition(
+    () => !!getFromWin1(firstUniversalMessage.id),
+    "First universal visible in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getFromWin2(firstUniversalMessage.id),
+    "First universal visible in window 2"
+  );
+  Assert.ok(
+    dispatchFirstUniversal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", firstUniversalMessage.id),
+      })
+    ),
+    "Impression recorded for the first universal"
+  );
+
+  const dispatchSecondUniversal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    browser1,
+    secondUniversalMessage,
+    dispatchSecondUniversal
+  );
+
+  await TestUtils.waitForCondition(
+    () => !!getFromWin1(secondUniversalMessage.id),
+    "Second universal visible in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getFromWin2(secondUniversalMessage.id),
+    "Second universal visible in window 2"
+  );
+  await TestUtils.waitForCondition(
+    () => !getFromWin1(firstUniversalMessage.id),
+    "First universal removed in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !getFromWin2(firstUniversalMessage.id),
+    "First universal removed in window 2"
+  );
+  Assert.ok(
+    dispatchSecondUniversal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", secondUniversalMessage.id),
+      })
+    ),
+    "Impression recorded for the second universal"
+  );
+
+  const dispatchFirstUniversalAgain = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    browser1,
+    firstUniversalMessage,
+    dispatchFirstUniversalAgain
+  );
+
+  await TestUtils.waitForCondition(
+    () => !!getFromWin1(firstUniversalMessage.id),
+    "First universal visible again in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getFromWin2(firstUniversalMessage.id),
+    "First universal visible again in window 2"
+  );
+  await TestUtils.waitForCondition(
+    () => !getFromWin1(secondUniversalMessage.id),
+    "Second universal removed in window 1"
+  );
+  await TestUtils.waitForCondition(
+    () => !getFromWin2(secondUniversalMessage.id),
+    "Second universal removed in window 2"
+  );
+  Assert.ok(
+    dispatchFirstUniversalAgain.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", firstUniversalMessage.id),
+      })
+    ),
+    "Impression recorded again for the first universal when shown again"
+  );
+
+  // Cleanup
+  removeByIdInWin(win1, firstUniversalMessage.id);
+  removeByIdInWin(win2, firstUniversalMessage.id);
+  removeByIdInWin(win1, secondUniversalMessage.id);
+  removeByIdInWin(win2, secondUniversalMessage.id);
+  await BrowserTestUtils.closeWindow(win2);
+  sandbox.restore();
+  cleanupInfobars();
+});
+
+const getNotificationFromWin = (win, id) =>
+  win?.gNotificationBox?.getNotificationWithValue?.(id);
+
+add_task(async function universal_replaces_global_across_windows() {
+  const sandbox = sinon.createSandbox();
+
+  const firstWindow = BrowserWindowTracker.getTopWindow();
+  const firstBrowser = firstWindow.gBrowser.selectedBrowser;
+  const secondWindow = await BrowserTestUtils.openNewBrowserWindow();
+
+  const globalMessage = {
+    id: "TEST_GLOBAL_ORIGINAL_FOR_UNIVERSAL_REPLACEMENT",
+    content: {
+      type: "global",
+      text: "original global",
+      buttons: [],
+      // no canReplace
+    },
+  };
+
+  const universalReplacement = {
+    id: "TEST_UNIVERSAL_REPLACES_GLOBAL",
+    content: {
+      type: "universal",
+      text: "replacement universal",
+      buttons: [],
+      canReplace: [globalMessage.id],
+    },
+  };
+
+  const dispatchGlobal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(firstBrowser, globalMessage, dispatchGlobal);
+
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(firstWindow, globalMessage.id),
+    "Global infobar visible in the first window"
+  );
+  Assert.ok(
+    !getNotificationFromWin(secondWindow, globalMessage.id),
+    "Global infobar is NOT shown in the second window"
+  );
+  Assert.ok(
+    dispatchGlobal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", globalMessage.id),
+      })
+    ),
+    "Recorded impression for the original global message"
+  );
+
+  const dispatchUniversal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    firstBrowser,
+    universalReplacement,
+    dispatchUniversal
+  );
+
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(firstWindow, universalReplacement.id),
+    "Universal replacement visible in the first window"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(secondWindow, universalReplacement.id),
+    "Universal replacement visible in the second window"
+  );
+  await TestUtils.waitForCondition(
+    () => !getNotificationFromWin(firstWindow, globalMessage.id),
+    "Original global infobar removed from the first window"
+  );
+
+  Assert.ok(
+    dispatchUniversal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", universalReplacement.id),
+      })
+    ),
+    "Recorded impression for the universal replacement (first appearance only)"
+  );
+
+  // Cleanup
+  removeByIdInWin(firstWindow, universalReplacement.id);
+  removeByIdInWin(secondWindow, universalReplacement.id);
+  removeByIdInWin(firstWindow, globalMessage.id);
+  await BrowserTestUtils.closeWindow(secondWindow);
+  sandbox.restore();
+  cleanupInfobars();
+});
+
+add_task(async function global_replaces_universal_across_windows() {
+  const sandbox = sinon.createSandbox();
+
+  const firstWindow = BrowserWindowTracker.getTopWindow();
+  const firstBrowser = firstWindow.gBrowser.selectedBrowser;
+  const secondWindow = await BrowserTestUtils.openNewBrowserWindow();
+
+  const universalOriginal = {
+    id: "TEST_UNIVERSAL_ORIGINAL_FOR_GLOBAL_REPLACEMENT",
+    content: {
+      type: "universal",
+      text: "original universal",
+      buttons: [],
+    },
+  };
+
+  const globalReplacement = {
+    id: "TEST_GLOBAL_REPLACES_UNIVERSAL",
+    content: {
+      type: "global",
+      text: "replacement global",
+      buttons: [],
+      canReplace: [universalOriginal.id],
+    },
+  };
+
+  const dispatchUniversal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    firstBrowser,
+    universalOriginal,
+    dispatchUniversal
+  );
+
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(firstWindow, universalOriginal.id),
+    "Original universal visible in the first window"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(secondWindow, universalOriginal.id),
+    "Original universal visible in the second window"
+  );
+  Assert.ok(
+    dispatchUniversal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", universalOriginal.id),
+      })
+    ),
+    "Recorded impression for the original universal"
+  );
+
+  const originalObs = Services.obs;
+  const removeSpy = sandbox.spy();
+  Services.obs = {
+    addObserver: originalObs.addObserver.bind(originalObs),
+    notifyObservers: originalObs.notifyObservers.bind(originalObs),
+    removeObserver(subject, topic) {
+      removeSpy(subject, topic);
+      return originalObs.removeObserver(subject, topic);
+    },
+  };
+  registerCleanupFunction(() => {
+    Services.obs = originalObs;
+  });
+
+  const dispatchGlobal = sandbox.stub();
+  await InfoBar.showInfoBarMessage(
+    firstBrowser,
+    globalReplacement,
+    dispatchGlobal
+  );
+
+  await TestUtils.waitForCondition(
+    () => !getNotificationFromWin(firstWindow, universalOriginal.id),
+    "Universal removed from the first window"
+  );
+  await TestUtils.waitForCondition(
+    () => !getNotificationFromWin(secondWindow, universalOriginal.id),
+    "Universal removed from the second window"
+  );
+  await TestUtils.waitForCondition(
+    () => !!getNotificationFromWin(firstWindow, globalReplacement.id),
+    "Global replacement visible in the first window"
+  );
+  Assert.ok(
+    !getNotificationFromWin(secondWindow, globalReplacement.id),
+    "Global replacement does NOT appear in the second window"
+  );
+
+  await TestUtils.waitForCondition(
+    () =>
+      removeSpy
+        .getCalls()
+        .some(c => c.args[0] === InfoBar && c.args[1] === "domwindowopened"),
+    "removeObserver was invoked for domwindowopened"
+  );
+
+  Assert.ok(
+    dispatchGlobal.calledWith(
+      sinon.match({
+        type: "IMPRESSION",
+        data: sinon.match.has("id", globalReplacement.id),
+      })
+    ),
+    "Recorded impression for the global replacement"
+  );
+
+  // Cleanup
+  removeByIdInWin(firstWindow, globalReplacement.id);
+  removeByIdInWin(firstWindow, universalOriginal.id);
+  removeByIdInWin(secondWindow, universalOriginal.id);
+  await BrowserTestUtils.closeWindow(secondWindow);
+  sandbox.restore();
+  cleanupInfobars();
 });

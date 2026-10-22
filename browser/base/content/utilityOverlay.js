@@ -1,5 +1,4 @@
-/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -13,14 +12,20 @@ var { XPCOMUtils } = ChromeUtils.importESModule(
 
 ChromeUtils.defineESModuleGetters(this, {
   AboutNewTab: "resource:///modules/AboutNewTab.sys.mjs",
+  AIWindow:
+    "moz-src:///browser/components/aiwindow/ui/modules/AIWindow.sys.mjs",
   BrowserUtils: "resource://gre/modules/BrowserUtils.sys.mjs",
   BrowserWindowTracker: "resource:///modules/BrowserWindowTracker.sys.mjs",
+  ContainerCreationPanel:
+    "chrome://browser/content/usercontext/ContainerCreationPanel.mjs",
   ContextualIdentityService:
-    "resource://gre/modules/ContextualIdentityService.sys.mjs",
+    "moz-src:///toolkit/components/contextualidentity/ContextualIdentityService.sys.mjs",
   ExtensionSettingsStore:
     "resource://gre/modules/ExtensionSettingsStore.sys.mjs",
+  ExtensionUtils: "resource://gre/modules/ExtensionUtils.sys.mjs",
   PrivateBrowsingUtils: "resource://gre/modules/PrivateBrowsingUtils.sys.mjs",
-  ShellService: "resource:///modules/ShellService.sys.mjs",
+  Referrals: "resource:///modules/referrals/Referrals.sys.mjs",
+  ShellService: "moz-src:///browser/components/shell/ShellService.sys.mjs",
   URILoadingHelper: "resource:///modules/URILoadingHelper.sys.mjs",
 });
 
@@ -57,10 +62,13 @@ Object.defineProperty(this, "BROWSER_NEW_TAB_URL", {
       if (
         !privateAllowed &&
         (extensionControlled ||
-          AboutNewTab.newTabURL.startsWith("moz-extension://"))
+          ExtensionUtils.isExtensionUrl(AboutNewTab.newTabURL))
       ) {
         return "about:privatebrowsing";
       }
+    }
+    if (AIWindow.isAIWindowActive(window)) {
+      return AIWindow.newTabURL;
     }
     return AboutNewTab.newTabURL;
   },
@@ -126,7 +134,7 @@ function checkForMiddleClick(node, event) {
   // We should be using the disabled property here instead of the attribute,
   // but some elements that this function is used with don't support it (e.g.
   // menuitem).
-  if (node.getAttribute("disabled") == "true") {
+  if (node.hasAttribute("disabled")) {
     return;
   } // Do nothing
 
@@ -173,38 +181,91 @@ function checkForMiddleClick(node, event) {
 function createUserContextMenu(
   event,
   {
+    target = null,
     isContextMenu = false,
+    isPanelList = false,
     excludeUserContextId = 0,
     showDefaultTab = false,
     useAccessKeys = true,
+    showAddContainer = true,
+    showManageContainers = true,
+    containerSource = "unknown",
   } = {}
 ) {
-  while (event.target.hasChildNodes()) {
-    event.target.firstChild.remove();
+  target = target || event.target;
+  while (target.hasChildNodes()) {
+    target.firstChild.remove();
   }
 
   MozXULElement.insertFTLIfNeeded("toolkit/global/contextual-identity.ftl");
   let docfrag = document.createDocumentFragment();
+  let createSeparator = isPanelList
+    ? () => document.createElement("hr")
+    : () => document.createXULElement("menuseparator");
+  let onActivate = (item, callback) =>
+    item.addEventListener(isPanelList ? "click" : "command", activateEvent => {
+      if (!isPanelList) {
+        activateEvent.stopPropagation();
+      }
+      callback();
+    });
 
-  // If we are excluding a userContextId, we want to add a 'no-container' item.
-  if (excludeUserContextId || showDefaultTab) {
-    let menuitem = document.createXULElement("menuitem");
-    if (useAccessKeys) {
-      document.l10n.setAttributes(menuitem, "user-context-none");
+  // panel-item takes its label from the message value, so the container labels
+  // have their own messages rather than the menuitem `.label` attribute ones.
+  let panelItemL10nIds = {
+    "user-context-new-tab": "user-context-new-tab-panel-item",
+    "user-context-personal": "user-context-personal-panel-item",
+    "user-context-work": "user-context-work-panel-item",
+    "user-context-banking": "user-context-banking-panel-item",
+    "user-context-shopping": "user-context-shopping-panel-item",
+    "user-context-add-container": "user-context-add-container-panel-item",
+    "user-context-manage-containers":
+      "user-context-manage-containers-panel-item",
+  };
+  let panelListReplacements = l10nId =>
+    (isPanelList && panelItemL10nIds[l10nId]) || l10nId;
+
+  let createMenuItem = ({ name = null, l10nId = null }) => {
+    let item = isPanelList
+      ? document.createElement("panel-item")
+      : document.createXULElement("menuitem");
+    let setLabel = label => {
+      if (isPanelList) {
+        item.textContent = label;
+      } else {
+        item.setAttribute("label", label);
+      }
+    };
+
+    if (name) {
+      setLabel(name);
+    } else if (useAccessKeys) {
+      if (isPanelList) {
+        item.setAttribute("data-l10n-attrs", "accesskey");
+      }
+      document.l10n.setAttributes(item, panelListReplacements(l10nId));
     } else {
-      const label =
-        ContextualIdentityService.formatContextLabel("user-context-none");
-      menuitem.setAttribute("label", label);
+      setLabel(
+        ContextualIdentityService.formatContextLabel(
+          panelListReplacements(l10nId)
+        )
+      );
     }
+
+    return item;
+  };
+
+  // Add an item for a tab without a container, labeled "New Tab".
+  if (excludeUserContextId || showDefaultTab) {
+    let menuitem = createMenuItem({ l10nId: "user-context-new-tab" });
     menuitem.setAttribute("data-usercontextid", "0");
     if (!isContextMenu) {
       menuitem.setAttribute("command", "Browser:NewUserContextTab");
+      menuitem.setAttribute("data-container-entrypoint", containerSource);
     }
 
     docfrag.appendChild(menuitem);
-
-    let menuseparator = document.createXULElement("menuseparator");
-    docfrag.appendChild(menuseparator);
+    docfrag.appendChild(createSeparator());
   }
 
   ContextualIdentityService.getPublicIdentities().forEach(identity => {
@@ -212,48 +273,60 @@ function createUserContextMenu(
       return;
     }
 
-    let menuitem = document.createXULElement("menuitem");
+    let menuitem = createMenuItem({
+      name: identity.name,
+      l10nId: identity.l10nId,
+    });
     menuitem.setAttribute("data-usercontextid", identity.userContextId);
-    if (identity.name) {
-      menuitem.setAttribute("label", identity.name);
-    } else if (useAccessKeys) {
-      document.l10n.setAttributes(menuitem, identity.l10nId);
-    } else {
-      const label = ContextualIdentityService.formatContextLabel(
-        identity.l10nId
-      );
-      menuitem.setAttribute("label", label);
-    }
-
-    menuitem.classList.add("menuitem-iconic");
-    menuitem.classList.add("identity-color-" + identity.color);
 
     if (!isContextMenu) {
       menuitem.setAttribute("command", "Browser:NewUserContextTab");
+      menuitem.setAttribute("data-container-entrypoint", containerSource);
     }
 
-    menuitem.classList.add("identity-icon-" + identity.icon);
+    if (isPanelList) {
+      let iconUrl = ContextualIdentityService.getContainerIconURL(
+        identity.icon
+      );
+      menuitem.style.setProperty("--panel-item-icon", `url("${iconUrl}")`);
+      menuitem.style.setProperty(
+        "--panel-item-fill",
+        ContextualIdentityService.getContainerColorCode(identity.color)
+      );
+    } else {
+      menuitem.classList.add("menuitem-iconic");
+      menuitem.classList.add("identity-color-" + identity.color);
+      menuitem.classList.add("identity-icon-" + identity.icon);
+    }
 
     docfrag.appendChild(menuitem);
   });
 
-  if (!isContextMenu) {
-    docfrag.appendChild(document.createXULElement("menuseparator"));
+  if (showAddContainer || showManageContainers) {
+    docfrag.appendChild(createSeparator());
+  }
 
-    let menuitem = document.createXULElement("menuitem");
-    if (useAccessKeys) {
-      document.l10n.setAttributes(menuitem, "user-context-manage-containers");
-    } else {
-      const label = ContextualIdentityService.formatContextLabel(
-        "user-context-manage-containers"
-      );
-      menuitem.setAttribute("label", label);
-    }
-    menuitem.setAttribute("command", "Browser:OpenAboutContainers");
+  if (showAddContainer) {
+    let menuitem = createMenuItem({ l10nId: "user-context-add-container" });
+    onActivate(menuitem, () =>
+      ContainerCreationPanel.open(window, containerSource)
+    );
     docfrag.appendChild(menuitem);
   }
 
-  event.target.appendChild(docfrag);
+  if (showManageContainers) {
+    let menuitem = createMenuItem({
+      l10nId: "user-context-manage-containers",
+    });
+    onActivate(menuitem, () =>
+      openPreferences("paneContainers", {
+        urlParams: { entrypoint: containerSource },
+      })
+    );
+    docfrag.appendChild(menuitem);
+  }
+
+  target.appendChild(docfrag);
   return true;
 }
 
@@ -272,7 +345,8 @@ function closeMenus(node) {
   }
 }
 
-/** This function takes in a key element and compares it to the keys pressed during an event.
+/**
+ * This function takes in a key element and compares it to the keys pressed during an event.
  *
  * @param aEvent
  *        The KeyboardEvent event you want to compare against your key.
@@ -318,44 +392,13 @@ function eventMatchesKey(aEvent, aKey) {
 }
 
 // Gather all descendent text under given document node.
+// NOTE: Keep this in sync with _gatherTextUnder in
+// browser/actors/ContextMenuChild.sys.mjs
 function gatherTextUnder(root) {
-  var text = "";
-  var node = root.firstChild;
-  var depth = 1;
-  while (node && depth > 0) {
-    // See if this node is text.
-    if (node.nodeType == Node.TEXT_NODE) {
-      // Add this text to our collection.
-      text += " " + node.data;
-    } else if (HTMLImageElement.isInstance(node)) {
-      // If it has an "alt" attribute, add that.
-      var altText = node.getAttribute("alt");
-      if (altText) {
-        text += " " + altText;
-      }
-    }
-    // Find next node to test.
-    // First, see if this node has children.
-    if (node.hasChildNodes()) {
-      // Go to first child.
-      node = node.firstChild;
-      depth++;
-    } else {
-      // No children, try next sibling (or parent next sibling).
-      while (depth > 0 && !node.nextSibling) {
-        node = node.parentNode;
-        depth--;
-      }
-      if (node.nextSibling) {
-        node = node.nextSibling;
-      }
-    }
-  }
-  // Strip leading and tailing whitespace.
-  text = text.trim();
-  // Compress remaining whitespace.
-  text = text.replace(/\s+/g, " ");
-  return text;
+  const encoder = Cu.createDocumentEncoder("text/plain");
+  encoder.init(root.ownerDocument, "text/plain", 0);
+  encoder.setContainerNode(root);
+  return encoder.encodeToString().trim();
 }
 
 // This function exists for legacy reasons.
@@ -397,7 +440,12 @@ function openAboutDialog() {
     features += "centerscreen,dependent,dialog=no";
   }
 
-  window.openDialog("chrome://browser/content/aboutDialog.xhtml", "", features);
+  var win = BrowserWindowTracker.getTopWindow() || window;
+  win.openDialog("chrome://browser/content/aboutDialog.xhtml", "", features);
+}
+
+function openReferralsPage() {
+  Referrals.openReferralsTab(window, "help_menu");
 }
 
 async function openPreferences(paneID, extraArgs) {
@@ -522,6 +570,9 @@ function buildHelpMenu() {
 
   document.getElementById("troubleShooting").disabled =
     !Services.policies.isAllowed("aboutSupport");
+
+  document.getElementById("menu_referralsPage").hidden =
+    !Services.prefs.getBoolPref("browser.referrals.enabled");
 
   let supportMenu = Services.policies.getSupportMenu();
   if (supportMenu) {

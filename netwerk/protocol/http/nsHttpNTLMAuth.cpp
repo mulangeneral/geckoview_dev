@@ -1,43 +1,39 @@
-/* vim:set ts=4 sw=2 sts=2 et ci: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // HttpLog.h should generally be included first
-#include "HttpLog.h"
-
 #include "nsHttpNTLMAuth.h"
-#include "nsIAuthModule.h"
+
+#include "HttpLog.h"
 #include "nsCOMPtr.h"
+#include "nsIAuthModule.h"
 #include "nsServiceManagerUtils.h"
 #include "plbase64.h"
 #include "prnetdb.h"
 
 //-----------------------------------------------------------------------------
 
-#include "nsIPrefBranch.h"
 #include "nsIHttpAuthenticableChannel.h"
+#include "nsIPrefBranch.h"
 #include "nsIURI.h"
 #ifdef XP_WIN
 #  include "nsIChannel.h"
-#  include "nsIX509Cert.h"
 #  include "nsITransportSecurityInfo.h"
+#  include "nsIX509Cert.h"
 #endif
-#include "mozilla/Attributes.h"
 #include "mozilla/Base64.h"
 #include "mozilla/CheckedInt.h"
-#include "mozilla/Maybe.h"
-#include "mozilla/Tokenizer.h"
-#include "mozilla/UniquePtr.h"
-#include "mozilla/Unused.h"
-#include "nsCRT.h"
-#include "nsNetUtil.h"
-#include "nsIChannel.h"
-#include "nsUnicharUtils.h"
-#include "mozilla/net/HttpAuthUtils.h"
 #include "mozilla/ClearOnShutdown.h"
-#include "mozilla/net/DNS.h"
+#include "mozilla/Maybe.h"
 #include "mozilla/StaticPrefs_browser.h"
+#include "mozilla/Tokenizer.h"
+#include "mozilla/net/DNS.h"
+#include "mozilla/net/HttpAuthUtils.h"
+#include "nsCRT.h"
+#include "nsIChannel.h"
+#include "nsNetUtil.h"
+#include "nsUnicharUtils.h"
 
 namespace mozilla {
 namespace net {
@@ -108,7 +104,7 @@ static bool CanUseDefaultCredentials(nsIHttpAuthenticableChannel* channel,
   }
 
   nsCOMPtr<nsIURI> uri;
-  Unused << channel->GetURI(getter_AddRefs(uri));
+  (void)channel->GetURI(getter_AddRefs(uri));
 
   bool allowNonFqdn;
   if (NS_FAILED(prefs->GetBoolPref(kAllowNonFqdn, &allowNonFqdn))) {
@@ -174,6 +170,10 @@ nsHttpNTLMAuth::ChallengeReceived(nsIHttpAuthenticableChannel* channel,
     nsCOMPtr<nsIAuthModule> module;
 
 #ifdef MOZ_AUTH_EXTENSION
+    // Remembered for GenerateCredentials, which has to tell an identity the
+    // user left empty apart from one it may fill in from the OS.
+    mAllowDefaultCredentials = CanUseDefaultCredentials(channel, isProxyAuth);
+
     // Check to see if we should default to our generic NTLM auth module
     // through UseGenericNTLM. (We use native auth by default if the
     // system provides it.) If *sessionState is non-null, we failed to
@@ -183,8 +183,7 @@ nsHttpNTLMAuth::ChallengeReceived(nsIHttpAuthenticableChannel* channel,
       // Check for approved default credentials hosts and proxies. If
       // *continuationState is non-null, the last authentication attempt
       // failed so skip default credential use.
-      if (!*continuationState &&
-          CanUseDefaultCredentials(channel, isProxyAuth)) {
+      if (!*continuationState && mAllowDefaultCredentials) {
         // Try logging in with the user's default credentials. If
         // successful, |identityInvalid| is false, which will trigger
         // a default credentials attempt once we return.
@@ -285,6 +284,14 @@ nsHttpNTLMAuth::GenerateCredentials(
 
   // initial challenge
   if (aChallenge.Equals("NTLM"_ns, nsCaseInsensitiveCStringComparator)) {
+    // An empty user or password makes nsAuthSSPI::Init authenticate as the
+    // logged-in user, which only CanUseDefaultCredentials() hosts may do.
+    if (mUseNative && !mAllowDefaultCredentials &&
+        (user.IsEmpty() || pass.IsEmpty())) {
+      LOG(("Not using default credentials for an untrusted host\n"));
+      return NS_ERROR_ABORT;
+    }
+
     // NTLM service name format is 'HTTP@host' for both http and https
     nsCOMPtr<nsIURI> uri;
     rv = authChannel->GetURI(getter_AddRefs(uri));

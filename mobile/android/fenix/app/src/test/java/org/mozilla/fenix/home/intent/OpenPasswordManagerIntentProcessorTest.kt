@@ -7,7 +7,6 @@ package org.mozilla.fenix.home.intent
 import android.content.Intent
 import androidx.navigation.NavController
 import io.mockk.Called
-import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
 import org.junit.Assert.assertFalse
@@ -17,7 +16,6 @@ import org.junit.Test
 import org.junit.runner.RunWith
 import org.mozilla.fenix.HomeActivity
 import org.mozilla.fenix.NavGraphDirections
-import org.mozilla.fenix.ext.nav
 import org.mozilla.fenix.shortcut.PasswordManagerIntentProcessor
 import org.mozilla.fenix.utils.Settings
 import org.robolectric.RobolectricTestRunner
@@ -29,9 +27,7 @@ class OpenPasswordManagerIntentProcessorTest {
     private lateinit var navController: NavController
     private lateinit var out: Intent
     private lateinit var processor: OpenPasswordManagerIntentProcessor
-    private val settings: Settings = mockk {
-        every { shouldUseComposableToolbar } returns false
-    }
+    private val settings: Settings = mockk()
 
     @Before
     fun setup() {
@@ -52,9 +48,10 @@ class OpenPasswordManagerIntentProcessorTest {
 
     @Test
     fun `GIVEN an intent with wrong action WHEN it is processed THEN nothing should happen`() {
-        val intent = Intent().apply {
-            action = TEST_WRONG_ACTION
-        }
+        val intent =
+            Intent().apply {
+                action = TEST_WRONG_ACTION
+            }
 
         assertFalse(processor.process(intent, navController, out, settings))
 
@@ -64,15 +61,16 @@ class OpenPasswordManagerIntentProcessorTest {
     }
 
     @Test
-    fun `GIVEN an intent with correct action and extra boolean WHEN it is processed THEN navigate should be called`() {
-        val intent = Intent().apply {
-            action = PasswordManagerIntentProcessor.Companion.ACTION_OPEN_PASSWORD_MANAGER
-            putExtra(HomeActivity.OPEN_PASSWORD_MANAGER, true)
-        }
+    fun `GIVEN an intent with correct action and extra boolean WHEN it is processed THEN navigates to password list fragment`() {
+        val intent =
+            Intent().apply {
+                action = PasswordManagerIntentProcessor.Companion.ACTION_OPEN_PASSWORD_MANAGER
+                putExtra(HomeActivity.OPEN_PASSWORD_MANAGER, true)
+            }
 
         assertTrue(processor.process(intent, navController, out, settings))
 
-        verify { navController.nav(null, NavGraphDirections.actionGlobalSavedLoginsAuthFragment()) }
+        verify { navController.navigate(NavGraphDirections.actionLoginsListFragment(), null) }
         verify { out.removeExtra(HomeActivity.OPEN_PASSWORD_MANAGER) }
     }
 

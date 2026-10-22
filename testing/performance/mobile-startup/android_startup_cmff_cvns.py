@@ -1,8 +1,8 @@
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
+import os
 import re
-import statistics
 import sys
 import time
 from datetime import datetime
@@ -107,25 +107,41 @@ class Startup_test:
         measurements = {}
         # Iterate through the tests in the test list
         print(f"Running {self.test_name} on {self.package_id}...")
+        self.device.shell("mkdir -p /sdcard/Download")
         time.sleep(self.get_warmup_delay_seconds())
         self.skip_onboarding(self.test_name)
         test_measurements = []
+        retried_already = False
 
         for i in range(ITERATIONS):
-            start_cmd_args = self.get_start_cmd(self.test_name)
-            print(start_cmd_args)
-            self.device.stop_application(self.package_id)
-            time.sleep(1)
-            print(f"iteration {i + 1}")
-            self.device.shell("logcat -c")
-            process = self.device.shell_output(start_cmd_args).splitlines()
-            test_measurements.append(self.get_measurement(self.test_name, process))
-
+            try:
+                start_cmd_args = self.get_start_cmd(self.test_name)
+                print(start_cmd_args)
+                self.device.stop_application(self.package_id)
+                time.sleep(1)
+                print(f"iteration {i + 1}")
+                self.device.shell("logcat -c")
+                process = self.device.shell_output(start_cmd_args).splitlines()
+                test_measurements.append(self.get_measurement(self.test_name, process))
+                if i % 10 == 0:
+                    screenshot_file = f"/sdcard/Download/{self.product}_iteration_{i}_startup_done_frame.png"
+                    self.device.shell(f"screencap -p {screenshot_file}")
+                    self.device.command_output([
+                        "pull",
+                        "-a",
+                        screenshot_file,
+                        os.environ["TESTING_DIR"],
+                    ])
+                retried_already = False
+            except Exception as e:
+                if retried_already:
+                    raise Exception(f"Failed multiple retries with: {e} ")
+                retried_already = True
         self.device.stop_application(self.package_id)
         print(f"{self.test_name}: {str(test_measurements)}")
         # Bug 1934023 - create way to pass median and still have replicates available
         # Bug 1971336 Remove the .mean metric once we have a sufficient data redundancy
-        measurements[f"{self.test_name}.mean"] = [statistics.mean(test_measurements)]
+        measurements[f"{self.test_name}.mean"] = test_measurements
         measurements[self.test_name] = test_measurements
         return measurements
 

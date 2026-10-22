@@ -2,45 +2,51 @@
  * Test telemetry for Tracking Protection
  */
 
+const { StartupTelemetry } = ChromeUtils.importESModule(
+  "moz-src:///browser/components/StartupTelemetry.sys.mjs"
+);
+
 const PREF = "privacy.trackingprotection.enabled";
 const BENIGN_PAGE =
-  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  // eslint-disable-next-line sdl/no-insecure-url
   "http://tracking.example.org/browser/browser/base/content/test/protectionsUI/benignPage.html";
 const TRACKING_PAGE =
-  // eslint-disable-next-line @microsoft/sdl/no-insecure-url
+  // eslint-disable-next-line sdl/no-insecure-url
   "http://tracking.example.org/browser/browser/base/content/test/protectionsUI/trackingPage.html";
 
-/**
- * Enable local telemetry recording for the duration of the tests.
- */
-var oldCanRecord = Services.telemetry.canRecordExtended;
-Services.telemetry.canRecordExtended = true;
 registerCleanupFunction(function () {
   UrlClassifierTestUtils.cleanupTestTrackers();
-  Services.telemetry.canRecordExtended = oldCanRecord;
   Services.prefs.clearUserPref(PREF);
+  Services.fog.testResetFOG();
 });
 
-function getShieldHistogram() {
-  return Services.telemetry.getHistogramById("TRACKING_PROTECTION_SHIELD");
-}
-
 function getShieldCounts() {
-  return getShieldHistogram().snapshot().values;
+  // testGetValue() returns null until the first sample is recorded.
+  return (
+    Glean.contentblocking.trackingProtectionShield.testGetValue()?.values ?? {}
+  );
 }
 
 add_setup(async function () {
   await UrlClassifierTestUtils.addTestTrackers();
 
   let TrackingProtection =
-    gBrowser.ownerGlobal.gProtectionsHandler.blockers.TrackingProtection;
+    gBrowser.documentGlobal.gProtectionsHandler.blockers.TrackingProtection;
   ok(TrackingProtection, "TP is attached to the browser window");
   ok(!TrackingProtection.enabled, "TP is not enabled");
 
-  let enabledCounts = Services.telemetry
-    .getHistogramById("TRACKING_PROTECTION_ENABLED")
-    .snapshot().values;
-  is(enabledCounts[0], 1, "TP was not enabled on start up");
+  // The other tests in this directory share this browser instance and call
+  // testResetFOG(), so the value recorded at startup is already gone by now.
+  // Record it again rather than depending on the file running first.
+  Services.fog.testResetFOG();
+  StartupTelemetry.contentBlocking();
+  // The labels are the strings "false" and "true", so this is the property
+  // named false, not the boolean.
+  is(
+    Glean.contentblocking.trackingProtectionEnabled.false.testGetValue(),
+    1,
+    "TP was not enabled on start up"
+  );
 });
 
 add_task(async function testShieldHistogram() {
@@ -48,17 +54,27 @@ add_task(async function testShieldHistogram() {
   let tab = await BrowserTestUtils.openNewForegroundTab(gBrowser);
 
   // Reset these to make counting easier
-  getShieldHistogram().clear();
+  Services.fog.testResetFOG();
 
-  await promiseTabLoadEvent(tab, BENIGN_PAGE);
+  await BrowserTestUtils.loadURIString({
+    browser: tab.linkedBrowser,
+    uriString: BENIGN_PAGE,
+  });
   is(getShieldCounts()[0], 1, "Page loads without tracking");
 
-  await promiseTabLoadEvent(tab, TRACKING_PAGE);
+  await BrowserTestUtils.loadURIString({
+    browser: tab.linkedBrowser,
+    uriString: TRACKING_PAGE,
+  });
   is(getShieldCounts()[0], 2, "Adds one more page load");
   is(getShieldCounts()[2], 1, "Counts one instance of the shield being shown");
 
   info("Disable TP for the page (which reloads the page)");
-  let tabReloadPromise = promiseTabLoadEvent(tab);
+  let reloadURI = tab.linkedBrowser.currentURI.spec;
+  let tabReloadPromise = BrowserTestUtils.loadURIString({
+    browser: tab.linkedBrowser,
+    uriString: reloadURI,
+  });
   gProtectionsHandler.disableForCurrentPage();
   await tabReloadPromise;
   is(getShieldCounts()[0], 3, "Adds one more page load");
@@ -69,7 +85,11 @@ add_task(async function testShieldHistogram() {
   );
 
   info("Re-enable TP for the page (which reloads the page)");
-  tabReloadPromise = promiseTabLoadEvent(tab);
+  reloadURI = tab.linkedBrowser.currentURI.spec;
+  tabReloadPromise = BrowserTestUtils.loadURIString({
+    browser: tab.linkedBrowser,
+    uriString: reloadURI,
+  });
   gProtectionsHandler.enableForCurrentPage();
   await tabReloadPromise;
   is(getShieldCounts()[0], 4, "Adds one more page load");
@@ -82,5 +102,5 @@ add_task(async function testShieldHistogram() {
   gBrowser.removeCurrentTab();
 
   // Reset these to make counting easier for the next test
-  getShieldHistogram().clear();
+  Services.fog.testResetFOG();
 });

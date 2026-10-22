@@ -595,12 +595,12 @@ static ALWAYS_INLINE IntRange clip_distance_range(const E& left,
 // Converts a run array into a flattened array of depth samples. This just
 // walks through every run and fills the samples with the depth value from
 // the run.
-static void flatten_depth_runs(DepthRun* runs, size_t width) {
+static void flatten_depth_runs(DepthRun* runs, int width) {
   if (runs->is_flat()) {
     return;
   }
   while (width > 0) {
-    size_t n = runs->count;
+    int n = min(int(runs->count), width);
     fill_flat_depth(runs, n, runs->depth);
     runs += n;
     width -= n;
@@ -1008,8 +1008,9 @@ static inline void draw_quad_spans(int nump, Point2D p[4], uint32_t z,
         // edges per the change in right and left X. If the left and right X
         // positions are extremely close together, then avoid stepping the
         // interpolants.
-        float stepScale = 1.0f / (right.x - left.x);
-        if (!isfinite(stepScale)) stepScale = 0.0f;
+        float stepWidth = right.x - left.x;
+        float stepScale = 1.0f / stepWidth;
+        if (!isfinite(stepWidth) || !isfinite(stepScale)) stepScale = 0.0f;
         Interpolants step = (right.interp - left.interp) * stepScale;
         // Advance current interpolants to X at start of span.
         Interpolants o = left.interp + step * (span.start + 0.5f - left.x);
@@ -1239,8 +1240,9 @@ static inline void draw_perspective_spans(int nump, Point3D* p,
         // Calculate the fragment Z and W change per change in fragment X step.
         // If the left and right X positions are extremely close together, then
         // avoid stepping.
-        float stepScale = 1.0f / (right.x() - left.x());
-        if (!isfinite(stepScale)) stepScale = 0.0f;
+        float stepWidth = right.x() - left.x();
+        float stepScale = 1.0f / stepWidth;
+        if (!isfinite(stepWidth) || !isfinite(stepScale)) stepScale = 0.0f;
         vec2_scalar stepZW = (right.zw() - left.zw()) * stepScale;
         // Calculate initial Z and W values for span start.
         vec2_scalar zw = left.zw() + stepZW * (span.start + 0.5f - left.x());
@@ -1449,6 +1451,11 @@ static inline void draw_perspective_clipped(int nump, Point3D* p_clip,
   }
 }
 
+static ALWAYS_INLINE bool isallfinite(Float w) {
+  Float w0 = w * Float(0.0f);
+  return isfinite(w0.x + w0.y + w0.z + w0.w);
+}
+
 // Draws a perspective-correct 3D primitive with varying Z value, as opposed
 // to a simple 2D planar primitive with a constant Z value that could be
 // trivially Z rejected. This requires clipping the primitive against the near
@@ -1476,74 +1483,78 @@ static void draw_perspective(int nump, Interpolants interp_outs[4],
     // No points cross the near or far planes, so no clipping required.
     // Just divide coords by W and convert to viewport. We assume the W
     // coordinate is non-zero and the reciprocal is finite since it would
-    // otherwise fail the test_none condition.
+    // otherwise fail the test_none condition. If W is a denormal, it might
+    // still generate a non-finite reciprocal, so check for that as well.
     Float w = 1.0f / pos.w;
-    vec3 screen = pos.sel(X, Y, Z) * w * scale + offset;
-    Point3D p[4] = {{screen.x.x, screen.y.x, screen.z.x, w.x},
-                    {screen.x.y, screen.y.y, screen.z.y, w.y},
-                    {screen.x.z, screen.y.z, screen.z.z, w.z},
-                    {screen.x.w, screen.y.w, screen.z.w, w.w}};
-    draw_perspective_clipped(nump, p, interp_outs, colortex, depthtex);
-  } else {
-    // Points cross the near or far planes, so we need to clip.
-    // Start with the original 3 or 4 points...
-    Point3D p[4] = {{pos.x.x, pos.y.x, pos.z.x, pos.w.x},
-                    {pos.x.y, pos.y.y, pos.z.y, pos.w.y},
-                    {pos.x.z, pos.y.z, pos.z.z, pos.w.z},
-                    {pos.x.w, pos.y.w, pos.z.w, pos.w.w}};
-    // Clipping can expand the points by 1 for each of 6 view frustum planes.
-    Point3D p_clip[4 + 6];
-    Interpolants interp_clip[4 + 6];
-    // Clip against near and far Z planes.
-    nump = clip_side<Z>(nump, p, interp_outs, p_clip, interp_clip,
-                        swgl_AAEdgeMask);
-    // If no points are left inside the view frustum, there's nothing to draw.
-    if (nump < 3) {
+    if (isallfinite(w)) {
+      vec3 screen = pos.sel(X, Y, Z) * w * scale + offset;
+      Point3D p[4] = {{screen.x.x, screen.y.x, screen.z.x, w.x},
+                      {screen.x.y, screen.y.y, screen.z.y, w.y},
+                      {screen.x.z, screen.y.z, screen.z.z, w.z},
+                      {screen.x.w, screen.y.w, screen.z.w, w.w}};
+      draw_perspective_clipped(nump, p, interp_outs, colortex, depthtex);
       return;
     }
-    // After clipping against only the near and far planes, we might still
-    // produce points where W = 0, exactly at the camera plane. OpenGL specifies
-    // that for clip coordinates, points must satisfy:
-    //   -W <= X <= W
-    //   -W <= Y <= W
-    //   -W <= Z <= W
-    // When Z = W = 0, this is trivially satisfied, but when we transform and
-    // divide by W below it will produce a divide by 0. Usually we want to only
-    // clip Z to avoid the extra work of clipping X and Y. We can still project
-    // points that fall outside the view frustum X and Y so long as Z is valid.
-    // The span drawing code will then ensure X and Y are clamped to viewport
-    // boundaries. However, in the Z = W = 0 case, sometimes clipping X and Y,
-    // will push W further inside the view frustum so that it is no longer 0,
-    // allowing us to finally proceed to projecting the points to the screen.
-    for (int i = 0; i < nump; i++) {
-      // Found an invalid W, so need to clip against X and Y...
-      if (p_clip[i].w <= 0.0f) {
-        // Ping-pong p_clip -> p_tmp -> p_clip.
-        Point3D p_tmp[4 + 6];
-        Interpolants interp_tmp[4 + 6];
-        nump = clip_side<X>(nump, p_clip, interp_clip, p_tmp, interp_tmp,
-                            swgl_AAEdgeMask);
-        if (nump < 3) return;
-        nump = clip_side<Y>(nump, p_tmp, interp_tmp, p_clip, interp_clip,
-                            swgl_AAEdgeMask);
-        if (nump < 3) return;
-        // After clipping against X and Y planes, there's still points left
-        // to draw, so proceed to trying projection now...
-        break;
-      }
-    }
-    // Divide coords by W and convert to viewport.
-    for (int i = 0; i < nump; i++) {
-      float w = 1.0f / p_clip[i].w;
-      // If the W coord is essentially zero, small enough that division would
-      // result in Inf/NaN, then just set the point to all zeroes, as the only
-      // point that satisfies -W <= X/Y/Z <= W is all zeroes.
-      p_clip[i] = isfinite(w)
-                      ? Point3D(p_clip[i].sel(X, Y, Z) * w * scale + offset, w)
-                      : Point3D(0.0f);
-    }
-    draw_perspective_clipped(nump, p_clip, interp_clip, colortex, depthtex);
   }
+
+  // Points cross the near or far planes, so we need to clip.
+  // Start with the original 3 or 4 points...
+  Point3D p[4] = {{pos.x.x, pos.y.x, pos.z.x, pos.w.x},
+                  {pos.x.y, pos.y.y, pos.z.y, pos.w.y},
+                  {pos.x.z, pos.y.z, pos.z.z, pos.w.z},
+                  {pos.x.w, pos.y.w, pos.z.w, pos.w.w}};
+  // Clipping can expand the points by 1 for each of 6 view frustum planes.
+  Point3D p_clip[4 + 6];
+  Interpolants interp_clip[4 + 6];
+  // Clip against near and far Z planes.
+  nump = clip_side<Z>(nump, p, interp_outs, p_clip, interp_clip,
+                      swgl_AAEdgeMask);
+  // If no points are left inside the view frustum, there's nothing to draw.
+  if (nump < 3) {
+    return;
+  }
+  // After clipping against only the near and far planes, we might still
+  // produce points where W = 0, exactly at the camera plane. OpenGL specifies
+  // that for clip coordinates, points must satisfy:
+  //   -W <= X <= W
+  //   -W <= Y <= W
+  //   -W <= Z <= W
+  // When Z = W = 0, this is trivially satisfied, but when we transform and
+  // divide by W below it will produce a divide by 0. Usually we want to only
+  // clip Z to avoid the extra work of clipping X and Y. We can still project
+  // points that fall outside the view frustum X and Y so long as Z is valid.
+  // The span drawing code will then ensure X and Y are clamped to viewport
+  // boundaries. However, in the Z = W = 0 case, sometimes clipping X and Y,
+  // will push W further inside the view frustum so that it is no longer 0,
+  // allowing us to finally proceed to projecting the points to the screen.
+  for (int i = 0; i < nump; i++) {
+    // Found an invalid W, so need to clip against X and Y...
+    if (p_clip[i].w <= 0.0f) {
+      // Ping-pong p_clip -> p_tmp -> p_clip.
+      Point3D p_tmp[4 + 6];
+      Interpolants interp_tmp[4 + 6];
+      nump = clip_side<X>(nump, p_clip, interp_clip, p_tmp, interp_tmp,
+                          swgl_AAEdgeMask);
+      if (nump < 3) return;
+      nump = clip_side<Y>(nump, p_tmp, interp_tmp, p_clip, interp_clip,
+                          swgl_AAEdgeMask);
+      if (nump < 3) return;
+      // After clipping against X and Y planes, there's still points left
+      // to draw, so proceed to trying projection now...
+      break;
+    }
+  }
+  // Divide coords by W and convert to viewport.
+  for (int i = 0; i < nump; i++) {
+    float w = 1.0f / p_clip[i].w;
+    // If the W coord is essentially zero, small enough that division would
+    // result in Inf/NaN, then just set the point to all zeroes, as the only
+    // point that satisfies -W <= X/Y/Z <= W is all zeroes.
+    p_clip[i] = isfinite(w)
+                    ? Point3D(p_clip[i].sel(X, Y, Z) * w * scale + offset, w)
+                    : Point3D(0.0f);
+  }
+  draw_perspective_clipped(nump, p_clip, interp_clip, colortex, depthtex);
 }
 
 static void draw_quad(int nump, Texture& colortex, Texture& depthtex) {

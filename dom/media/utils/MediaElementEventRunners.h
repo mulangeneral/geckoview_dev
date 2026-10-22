@@ -10,8 +10,8 @@
 #include "nsIContent.h"
 #include "nsINamed.h"
 #include "nsIRunnable.h"
-#include "nsString.h"
 #include "nsISupportsImpl.h"
+#include "nsString.h"
 #include "nsTString.h"
 
 namespace mozilla::dom {
@@ -171,7 +171,7 @@ class nsSourceErrorEventRunner : public nsMediaEventRunner {
       : nsMediaEventRunner("nsSourceErrorEventRunner", aElement),
         mSource(aSource),
         mErrorDetails(NS_ConvertUTF8toUTF16(aErrorDetails)) {}
-  NS_IMETHOD Run() override;
+  MOZ_CAN_RUN_SCRIPT_BOUNDARY NS_IMETHOD Run() override;
 
  private:
   virtual ~nsSourceErrorEventRunner() = default;

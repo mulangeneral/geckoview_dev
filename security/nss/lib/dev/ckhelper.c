@@ -13,6 +13,7 @@
 #endif /* CKHELPER_H */
 
 extern const NSSError NSS_ERROR_DEVICE_ERROR;
+extern const NSSError NSS_ERROR_INTERNAL_ERROR;
 
 static const CK_BBOOL s_true = CK_TRUE;
 NSS_IMPLEMENT_DATA const NSSItem
@@ -42,6 +43,7 @@ is_string_attribute(
     switch (aType) {
         case CKA_LABEL:
         case CKA_NSS_EMAIL:
+        case CKA_NSS_URL:
             isString = PR_TRUE;
             break;
         default:
@@ -92,7 +94,7 @@ nssCKObject_GetAttributes(
         /* Allocate memory for each attribute. */
         for (i = 0; i < count; i++) {
             CK_ULONG ulValueLen = obj_template[i].ulValueLen;
-            if (ulValueLen == 0 || ulValueLen == (CK_ULONG)-1) {
+            if (ulValueLen == 0 || ulValueLen >= (CK_ULONG)PR_UINT32_MAX) {
                 obj_template[i].pValue = NULL;
                 obj_template[i].ulValueLen = 0;
                 continue;
@@ -248,6 +250,11 @@ nss_cert_type_from_ck_attrib(CK_ATTRIBUTE_PTR attrib)
         /* default to PKIX */
         return NSSCertificateType_PKIX;
     }
+    /* The token controls ulValueLen; reject any size that cannot hold a
+     * full CK_CERTIFICATE_TYPE to avoid an out-of-bounds heap read. */
+    if (attrib->ulValueLen != sizeof(CK_CERTIFICATE_TYPE)) {
+        return NSSCertificateType_Unknown;
+    }
     ckCertType = *((CK_ULONG *)attrib->pValue);
     switch (ckCertType) {
         case CKC_X_509:
@@ -361,21 +368,26 @@ get_nss_trust(
     nssTrustLevel t;
     switch (ckt) {
         case CKT_NSS_NOT_TRUSTED:
+        case CKT_NOT_TRUSTED:
             t = nssTrustLevel_NotTrusted;
             break;
         case CKT_NSS_TRUSTED_DELEGATOR:
+        case CKT_TRUST_ANCHOR:
             t = nssTrustLevel_TrustedDelegator;
             break;
         case CKT_NSS_VALID_DELEGATOR:
             t = nssTrustLevel_ValidDelegator;
             break;
         case CKT_NSS_TRUSTED:
+        case CKT_TRUSTED:
             t = nssTrustLevel_Trusted;
             break;
         case CKT_NSS_MUST_VERIFY_TRUST:
+        case CKT_TRUST_MUST_VERIFY_TRUST:
             t = nssTrustLevel_MustVerify;
             break;
         case CKT_NSS_TRUST_UNKNOWN:
+        case CKT_TRUST_UNKNOWN:
         default:
             t = nssTrustLevel_Unknown;
             break;
@@ -387,7 +399,8 @@ NSS_IMPLEMENT PRStatus
 nssCryptokiTrust_GetAttributes(
     nssCryptokiObject *trustObject,
     nssSession *sessionOpt,
-    NSSItem *sha1_hash,
+    NSSItem *hash,
+    CK_MECHANISM_TYPE *hashMech,
     nssTrustLevel *serverAuth,
     nssTrustLevel *clientAuth,
     nssTrustLevel *codeSigning,
@@ -402,30 +415,50 @@ nssCryptokiTrust_GetAttributes(
      * unlikely case that these change, be sure to update softoken's
      * 'sftkdb_isNullTrust()' function */
     CK_BBOOL stepUp = PR_FALSE;
-    CK_TRUST saTrust = CKT_NSS_TRUST_UNKNOWN;
-    CK_TRUST caTrust = CKT_NSS_TRUST_UNKNOWN;
-    CK_TRUST epTrust = CKT_NSS_TRUST_UNKNOWN;
-    CK_TRUST csTrust = CKT_NSS_TRUST_UNKNOWN;
+    CK_TRUST saTrust = CKT_TRUST_UNKNOWN;
+    CK_TRUST caTrust = CKT_TRUST_UNKNOWN;
+    CK_TRUST epTrust = CKT_TRUST_UNKNOWN;
+    CK_TRUST csTrust = CKT_TRUST_UNKNOWN;
     CK_ATTRIBUTE_PTR attr;
     CK_ATTRIBUTE trust_template[7];
-    CK_ATTRIBUTE_PTR sha1_hash_attr;
+    CK_ATTRIBUTE_PTR hash_attr;
     CK_ULONG trust_size;
 
     /* Use the trust object to find the trust settings */
     NSS_CK_TEMPLATE_START(trust_template, attr, trust_size);
     NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TOKEN, isToken);
-    NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TRUST_SERVER_AUTH, saTrust);
-    NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TRUST_CLIENT_AUTH, caTrust);
-    NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TRUST_EMAIL_PROTECTION, epTrust);
-    NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TRUST_CODE_SIGNING, csTrust);
-    NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_TRUST_STEP_UP_APPROVED, stepUp);
-    sha1_hash_attr = attr;
-    NSS_CK_SET_ATTRIBUTE_ITEM(attr, CKA_CERT_SHA1_HASH, sha1_hash);
+    switch (trustObject->trustType) {
+        case CKO_TRUST:
+            *hashMech = CKM_INVALID_MECHANISM;
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_PKCS_TRUST_SERVER_AUTH, saTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_PKCS_TRUST_CLIENT_AUTH, caTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_PKCS_TRUST_EMAIL_PROTECTION, epTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_PKCS_TRUST_CODE_SIGNING, csTrust);
+            hash_attr = attr;
+            NSS_CK_SET_ATTRIBUTE_ITEM(attr, CKA_HASH_OF_CERTIFICATE, hash);
+            NSS_CK_SET_ATTRIBUTE_FIXED_PTR(attr, CKA_NAME_HASH_ALGORITHM, hashMech);
+            break;
+        case CKO_NSS_TRUST:
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_NSS_TRUST_SERVER_AUTH, saTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_NSS_TRUST_CLIENT_AUTH, caTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_NSS_TRUST_EMAIL_PROTECTION, epTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_NSS_TRUST_CODE_SIGNING, csTrust);
+            NSS_CK_SET_ATTRIBUTE_VAR(attr, CKA_NSS_TRUST_STEP_UP_APPROVED, stepUp);
+            hash_attr = attr;
+            NSS_CK_SET_ATTRIBUTE_ITEM(attr, CKA_NSS_CERT_SHA1_HASH, hash);
+            *hashMech = CKM_SHA_1;
+            break;
+        default:
+            /* shouldn't happen, crash on debug builds if it does */
+            PORT_Assert(0 || trustObject->trustType);
+            nss_SetError(NSS_ERROR_INTERNAL_ERROR);
+            return PR_FAILURE;
+    }
     NSS_CK_TEMPLATE_FINISH(trust_template, attr, trust_size);
 
     status = nssToken_GetCachedObjectAttributes(trustObject->token, NULL,
                                                 trustObject,
-                                                CKO_NSS_TRUST,
+                                                trustObject->trustType,
                                                 trust_template, trust_size);
     if (status != PR_SUCCESS) {
         session = sessionOpt ? sessionOpt
@@ -445,11 +478,11 @@ nssCryptokiTrust_GetAttributes(
         }
     }
 
-    if (sha1_hash_attr->ulValueLen == -1) {
-        /* The trust object does not have the CKA_CERT_SHA1_HASH attribute. */
-        sha1_hash_attr->ulValueLen = 0;
+    if (hash_attr->ulValueLen == -1) {
+        /* The trust object does not have the certificate hash attribute. */
+        hash_attr->ulValueLen = 0;
     }
-    sha1_hash->size = sha1_hash_attr->ulValueLen;
+    hash->size = hash_attr->ulValueLen;
     *serverAuth = get_nss_trust(saTrust);
     *clientAuth = get_nss_trust(caTrust);
     *emailProtection = get_nss_trust(epTrust);

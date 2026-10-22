@@ -1,5 +1,3 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -22,10 +20,20 @@ namespace layers {
 class APZInputBridgeParent;
 class AsyncPanZoomController;
 class InputBlockState;
+class KeyboardMap;
 class TouchBlockState;
 struct ScrollableLayerGuid;
 struct TargetConfirmationFlags;
 struct PointerEventsConsumableFlags;
+
+// This enum class is used for communicating between APZ and the browser gesture
+// support code. APZ needs to wait for the browser to send this response just
+// like APZ waits for the content's response if there's an APZ ware event
+// listener in the content process.
+enum class BrowserGestureResponse : bool {
+  NotConsumed = 0,  // Representing the browser doesn't consume the gesture
+  Consumed = 1,  // Representing the browser has started consuming the gesture.
+};
 
 enum class APZHandledPlace : uint8_t {
   Unhandled = 0,         // we know for sure that the event will not be handled
@@ -207,6 +215,9 @@ struct APZEventResult {
    * input block, otherwise InputBlockState::NO_BLOCK_ID.
    */
   uint64_t mInputBlockId;
+
+  // Whether APZ found a horizontal scroll target.
+  bool mTargetCanScrollHorizontally = false;
 };
 
 /**
@@ -272,6 +283,29 @@ class APZInputBridge {
   // be sent through APZ so they are transformed correctly for BrowserParent.
   static Maybe<APZWheelAction> ActionForWheelEvent(WidgetWheelEvent* aEvent);
 
+  /**
+   * Set the keyboard shortcuts to use for translating keyboard events.
+   */
+  virtual void SetKeyboardMap(const KeyboardMap& aKeyboardMap) = 0;
+
+  virtual void SetDPI(float aDpiValue) = 0;
+
+  virtual void SetBrowserGestureResponse(uint64_t aInputBlockId,
+                                         BrowserGestureResponse aResponse) = 0;
+
+  virtual void StartAutoscroll(const ScrollableLayerGuid& aGuid,
+                               const ScreenPoint& aAnchorLocation) = 0;
+
+  virtual void StopAutoscroll(const ScrollableLayerGuid& aGuid) = 0;
+
+  /**
+   * Function used to disable LongTap gestures.
+   *
+   * On slow running tests, drags and touch events can be misinterpreted
+   * as a long tap. This allows tests to disable long tap gesture detection.
+   */
+  virtual void SetLongTapEnabled(bool aTapGestureEnabled) = 0;
+
  protected:
   friend class APZInputBridgeParent;
 
@@ -292,15 +326,6 @@ class APZInputBridge {
 
 std::ostream& operator<<(std::ostream& aOut,
                          const APZHandledResult& aHandledResult);
-
-// This enum class is used for communicating between APZ and the browser gesture
-// support code. APZ needs to wait for the browser to send this response just
-// like APZ waits for the content's response if there's an APZ ware event
-// listener in the content process.
-enum class BrowserGestureResponse : bool {
-  NotConsumed = 0,  // Representing the browser doesn't consume the gesture
-  Consumed = 1,  // Representing the browser has started consuming the gesture.
-};
 
 }  // namespace layers
 }  // namespace mozilla
