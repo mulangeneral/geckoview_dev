@@ -1,0 +1,16 @@
+# Carota GeckoView 157 构建配置
+# 用法：cp carota/mozconfig-android mozconfig，然后按构建机实际路径修改。
+# 参考：mobile/android/docs/geckoview/contributor/geckoview-quick-start.md
+
+ac_add_options --enable-application=mobile/android
+# 只出 arm64（车机 8155/8775/8676 都是 arm64），AAR 是单 ABI，APK 不会被 4 ABI 撑大
+ac_add_options --target=aarch64-linux-android
+ac_add_options --enable-optimize
+ac_add_options --disable-debug
+
+# 已 export ANDROID_HOME / ANDROID_NDK_HOME / JAVA_HOME 时可删掉下面三行
+# ac_add_options --with-android-sdk=/opt/android-sdk
+# ac_add_options --with-android-ndk=/opt/android-ndk
+# ac_add_options --with-java-bin-path=/usr/lib/jvm/java-17-openjdk/bin
+
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-carota-157
