@@ -1,0 +1,704 @@
+diff --git a/dom/chrome-webidl/MediaController.webidl b/dom/chrome-webidl/MediaController.webidl
+index 494ed7a424..ec4e12964e 100644
+--- a/dom/chrome-webidl/MediaController.webidl
++++ b/dom/chrome-webidl/MediaController.webidl
+@@ -47,6 +47,8 @@ interface MediaController : EventTarget {
+   readonly attribute boolean isAudible;
+   readonly attribute boolean isMuted;
+   readonly attribute boolean isPlaying;
++  // True if any video media is currently playing in this tab. (Carota patch)
++  readonly attribute boolean hasVideoMedia;
+   readonly attribute boolean isAnyMediaBeingControlled;
+   readonly attribute MediaSessionPlaybackState playbackState;
+ 
+@@ -70,6 +72,7 @@ interface MediaController : EventTarget {
+   // Following events would only be dispatched after controller is active.
+   attribute EventHandler onmetadatachange;
+   attribute EventHandler onplaybackstatechange;
++  attribute EventHandler onvideomediachange;
+   attribute EventHandler onpositionstatechange;
+   attribute EventHandler onsupportedkeyschange;
+ 
+diff --git a/dom/ipc/ContentParent.cpp b/dom/ipc/ContentParent.cpp
+index 16ed335487..e162310d01 100644
+--- a/dom/ipc/ContentParent.cpp
++++ b/dom/ipc/ContentParent.cpp
+@@ -6734,13 +6734,13 @@ mozilla::ipc::IPCResult ContentParent::RecvTestCookiePermissionDecided(
+ 
+ mozilla::ipc::IPCResult ContentParent::RecvNotifyMediaPlaybackChanged(
+     const MaybeDiscarded<BrowsingContext>& aContext,
+-    MediaPlaybackState aState) {
++    MediaPlaybackState aState, bool aIsVideo) {
+   if (aContext.IsNullOrDiscarded()) {
+     return IPC_OK();
+   }
+   if (RefPtr<IMediaInfoUpdater> updater =
+           aContext.get_canonical()->GetMediaController()) {
+-    updater->NotifyMediaPlaybackChanged(aContext.ContextId(), aState);
++    updater->NotifyMediaPlaybackChanged(aContext.ContextId(), aState, aIsVideo);
+   }
+   return IPC_OK();
+ }
+diff --git a/dom/ipc/ContentParent.h b/dom/ipc/ContentParent.h
+index 46c69a2127..133c227277 100644
+--- a/dom/ipc/ContentParent.h
++++ b/dom/ipc/ContentParent.h
+@@ -1234,7 +1234,7 @@ class ContentParent final : public PContentParent,
+ 
+   mozilla::ipc::IPCResult RecvNotifyMediaPlaybackChanged(
+       const MaybeDiscarded<BrowsingContext>& aContext,
+-      MediaPlaybackState aState);
++      MediaPlaybackState aState, bool aIsVideo);
+ 
+   mozilla::ipc::IPCResult RecvNotifyMediaAudibleChanged(
+       const MaybeDiscarded<BrowsingContext>& aContext, MediaAudibleState aState,
+diff --git a/dom/ipc/PContent.ipdl b/dom/ipc/PContent.ipdl
+index 3d28b898e3..4d2be34ec8 100644
+--- a/dom/ipc/PContent.ipdl
++++ b/dom/ipc/PContent.ipdl
+@@ -1700,7 +1700,7 @@ parent:
+     * controller.
+     */
+     async NotifyMediaPlaybackChanged(MaybeDiscardedBrowsingContext aContext,
+-                                     MediaPlaybackState aState);
++                                     MediaPlaybackState aState, bool aIsVideo);
+ 
+    /**
+     * When media became audible or inaudible in content process, we have to
+diff --git a/dom/media/mediacontrol/ContentMediaController.cpp b/dom/media/mediacontrol/ContentMediaController.cpp
+index d21ac2bafd..87fc32059a 100644
+--- a/dom/media/mediacontrol/ContentMediaController.cpp
++++ b/dom/media/mediacontrol/ContentMediaController.cpp
+@@ -72,23 +72,25 @@ ContentMediaAgent* ContentMediaAgent::Get(BrowsingContext* aBC) {
+ }
+ 
+ void ContentMediaAgent::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                                   MediaPlaybackState aState) {
++                                                   MediaPlaybackState aState,
++                                                   bool aIsVideo) {
+   MOZ_ASSERT(NS_IsMainThread());
+   RefPtr<BrowsingContext> bc = GetBrowsingContextForAgent(aBrowsingContextId);
+   if (!bc || bc->IsDiscarded()) {
+     return;
+   }
+ 
+-  LOG("Notify media {} in BC {}", ToString(aState).c_str(), bc->Id());
++  LOG("Notify media {} (isVideo={}) in BC {}", ToString(aState).c_str(),
++      aIsVideo, bc->Id());
+   if (XRE_IsContentProcess()) {
+     ContentChild* contentChild = ContentChild::GetSingleton();
+-    (void)contentChild->SendNotifyMediaPlaybackChanged(bc, aState);
++    (void)contentChild->SendNotifyMediaPlaybackChanged(bc, aState, aIsVideo);
+   } else {
+     // Currently this only happen when we disable e10s, otherwise all controlled
+     // media would be run in the content process.
+     if (RefPtr<IMediaInfoUpdater> updater =
+             bc->Canonical()->GetMediaController()) {
+-      updater->NotifyMediaPlaybackChanged(bc->Id(), aState);
++      updater->NotifyMediaPlaybackChanged(bc->Id(), aState, aIsVideo);
+     }
+   }
+ }
+diff --git a/dom/media/mediacontrol/ContentMediaController.h b/dom/media/mediacontrol/ContentMediaController.h
+index 6be9345a7f..f3fd2ba0e7 100644
+--- a/dom/media/mediacontrol/ContentMediaController.h
++++ b/dom/media/mediacontrol/ContentMediaController.h
+@@ -70,7 +70,8 @@ class ContentMediaAgent : public IMediaInfoUpdater {
+ 
+   // IMediaInfoUpdater Methods
+   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                  MediaPlaybackState aState) override;
++                                  MediaPlaybackState aState,
++                                  bool aIsVideo) override;
+   void NotifyMediaAudibleChanged(
+       uint64_t aBrowsingContextId, MediaAudibleState aState,
+       ControlType aType = ControlType::eControllable,
+diff --git a/dom/media/mediacontrol/MediaController.cpp b/dom/media/mediacontrol/MediaController.cpp
+index d1ae030d27..08457502ca 100644
+--- a/dom/media/mediacontrol/MediaController.cpp
++++ b/dom/media/mediacontrol/MediaController.cpp
+@@ -253,6 +253,8 @@ bool MediaController::IsAudible() const {
+ 
+ bool MediaController::IsPlaying() const { return IsMediaPlaying(); }
+ 
++bool MediaController::HasVideoMedia() const { return IsAnyVideoMediaPlaying(); }
++
+ bool MediaController::IsActive() const { return mIsActive; };
+ 
+ bool MediaController::ShouldPropagateActionToAllContexts(
+@@ -348,13 +350,23 @@ void MediaController::Shutdown() {
+ }
+ 
+ void MediaController::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                                 MediaPlaybackState aState) {
++                                                 MediaPlaybackState aState,
++                                                 bool aIsVideo) {
+   if (mShutdown) {
+     return;
+   }
+-  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState);
++  const bool oldHasVideoMedia = HasVideoMedia();
++  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState,
++                                                 aIsVideo);
+   UpdateDeactivationTimerIfNeeded();
+   UpdateActivatedStateIfNeeded();
++  // If the aggregated playback state did not change but the video state did,
++  // notify the embedder so it can refresh its cached `isVideo`. This has to run
++  // after UpdateActivatedStateIfNeeded(), otherwise the first activation is
++  // swallowed by the mIsActive guard.
++  if (HasVideoMedia() != oldHasVideoMedia) {
++    DispatchAsyncEvent(u"videomediachange"_ns);
++  }
+ }
+ 
+ void MediaController::UpdateDeactivationTimerIfNeeded() {
+diff --git a/dom/media/mediacontrol/MediaController.h b/dom/media/mediacontrol/MediaController.h
+index 5286edcd32..7427cfaad8 100644
+--- a/dom/media/mediacontrol/MediaController.h
++++ b/dom/media/mediacontrol/MediaController.h
+@@ -102,6 +102,7 @@ class MediaController final : public DOMEventTargetHelper,
+   IMPL_EVENT_HANDLER(metadatachange);
+   IMPL_EVENT_HANDLER(supportedkeyschange);
+   IMPL_EVENT_HANDLER(playbackstatechange);
++  IMPL_EVENT_HANDLER(videomediachange);
+   IMPL_EVENT_HANDLER(positionstatechange);
+ 
+   // IMediaController's methods
+@@ -135,9 +136,13 @@ class MediaController final : public DOMEventTargetHelper,
+   bool IsActive() const override;
+   bool IsMuted() const;
+ 
++  // True if any video media is currently playing in this tab. (Carota patch)
++  bool HasVideoMedia() const;
++
+   // IMediaInfoUpdater's methods
+   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                  MediaPlaybackState aState) override;
++                                  MediaPlaybackState aState,
++                                  bool aIsVideo) override;
+   void NotifyMediaAudibleChanged(
+       uint64_t aBrowsingContextId, MediaAudibleState aState,
+       ControlType aType = ControlType::eControllable,
+diff --git a/dom/media/mediacontrol/MediaPlaybackStatus.cpp b/dom/media/mediacontrol/MediaPlaybackStatus.cpp
+index 792f521981..3c6cac56d8 100644
+--- a/dom/media/mediacontrol/MediaPlaybackStatus.cpp
++++ b/dom/media/mediacontrol/MediaPlaybackStatus.cpp
+@@ -15,9 +15,10 @@ namespace mozilla::dom {
+               "MediaPlaybackStatus={}, " msg, fmt::ptr(this), ##__VA_ARGS__)
+ 
+ void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
+-                                                   MediaPlaybackState aState) {
+-  LOG("Update playback state '{}' for context {}", EnumValueToString(aState),
+-      aContextId);
++                                                   MediaPlaybackState aState,
++                                                   bool aIsVideo) {
++  LOG("Update playback state '{}' (isVideo={}) for context {}",
++      EnumValueToString(aState), aIsVideo, aContextId);
+   MOZ_ASSERT(NS_IsMainThread());
+ 
+   ContextMediaInfo& info = GetNotNullContextInfo(aContextId);
+@@ -27,9 +28,15 @@ void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
+     info.DecreaseControlledMediaNum();
+   } else if (aState == MediaPlaybackState::ePlayed) {
+     info.IncreasePlayingMediaNum();
++    if (aIsVideo) {
++      info.IncreasePlayingVideoMediaNum();
++    }
+   } else {
+     MOZ_ASSERT(aState == MediaPlaybackState::ePaused);
+     info.DecreasePlayingMediaNum();
++    if (aIsVideo) {
++      info.DecreasePlayingVideoMediaNum();
++    }
+   }
+ 
+   LOG("UpdateMediaPlaybackState for context {} (controlled {} audible {})",
+@@ -58,6 +65,7 @@ void MediaPlaybackStatus::MaybeDestroyContextInfo(
+       aInfo.IsAudible()) {
+     return;
+   }
++  MOZ_ASSERT(!aInfo.IsAnyVideoMediaPlaying());
+   DestroyContextInfo(aContextId);
+ }
+ 
+@@ -120,6 +128,15 @@ bool MediaPlaybackStatus::IsPlaying() const {
+                      [](const auto& info) { return info->IsPlaying(); });
+ }
+ 
++bool MediaPlaybackStatus::IsAnyVideoMediaPlaying() const {
++  MOZ_ASSERT(NS_IsMainThread());
++  return std::any_of(mContextInfoMap.Values().cbegin(),
++                     mContextInfoMap.Values().cend(),
++                     [](const auto& info) {
++                       return info->IsAnyVideoMediaPlaying();
++                     });
++}
++
+ bool MediaPlaybackStatus::IsAudible() const {
+   MOZ_ASSERT(NS_IsMainThread());
+   return std::any_of(mContextInfoMap.Values().cbegin(),
+diff --git a/dom/media/mediacontrol/MediaPlaybackStatus.h b/dom/media/mediacontrol/MediaPlaybackStatus.h
+index e4bc47402a..6f6dbf24fd 100644
+--- a/dom/media/mediacontrol/MediaPlaybackStatus.h
++++ b/dom/media/mediacontrol/MediaPlaybackStatus.h
+@@ -79,7 +79,8 @@ struct AudibleSource {
+  */
+ class MediaPlaybackStatus final {
+  public:
+-  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState);
++  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState,
++                                bool aIsVideo);
+ 
+   // Returns true if the audio-focus owner shifted as a side-effect.
+   bool UpdateMediaAudibleState(uint64_t aContextId, MediaAudibleState aState,
+@@ -92,6 +93,7 @@ class MediaPlaybackStatus final {
+   bool IsPlaying() const;
+   bool IsAudible() const;
+   bool IsAnyMediaBeingControlled() const;
++  bool IsAnyVideoMediaPlaying() const;
+   Maybe<PositionState> GuessedMediaPositionState(
+       Maybe<uint64_t> aPreferredContextId) const;
+ 
+@@ -150,6 +152,19 @@ class MediaPlaybackStatus final {
+ #endif
+       mPlayingMediaNum--;
+     }
++    // Number of playing video media, used to tell audio and video apart.
++    void IncreasePlayingVideoMediaNum() {
++#ifndef FUZZING_SNAPSHOT
++      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum < mPlayingMediaNum);
++#endif
++      mPlayingVideoMediaNum++;
++    }
++    void DecreasePlayingVideoMediaNum() {
++#ifndef FUZZING_SNAPSHOT
++      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum > 0);
++#endif
++      mPlayingVideoMediaNum--;
++    }
+ 
+     void AddAudibleSource(ControlType aControlType,
+                           AudioSessionType aSessionType);
+@@ -159,6 +174,7 @@ class MediaPlaybackStatus final {
+     bool HasAudibleSourceOfControlType(ControlType aControlType) const;
+ 
+     bool IsPlaying() const { return mPlayingMediaNum > 0; }
++    bool IsAnyVideoMediaPlaying() const { return mPlayingVideoMediaNum > 0; }
+     bool IsAnyMediaBeingControlled() const { return mControlledMediaNum > 0; }
+     uint32_t ControlledMediaNum() const { return mControlledMediaNum; }
+     size_t AudibleSourceCount() const { return mAudibleSources.Length(); }
+@@ -181,11 +197,12 @@ class MediaPlaybackStatus final {
+ 
+    private:
+     /**
+-     * The possible value for these two numbers should follow this rule,
+-     * mControlledMediaNum >= mPlayingMediaNum.
++     * The possible value for these numbers should follow this rule,
++     * mControlledMediaNum >= mPlayingMediaNum >= mPlayingVideoMediaNum.
+      */
+     uint32_t mControlledMediaNum = 0;
+     uint32_t mPlayingMediaNum = 0;
++    uint32_t mPlayingVideoMediaNum = 0;
+     uint64_t mContextId = 0;
+ 
+     /**
+diff --git a/dom/media/mediacontrol/MediaStatusManager.cpp b/dom/media/mediacontrol/MediaStatusManager.cpp
+index ad55222105..7f57fe79bf 100644
+--- a/dom/media/mediacontrol/MediaStatusManager.cpp
++++ b/dom/media/mediacontrol/MediaStatusManager.cpp
+@@ -310,11 +310,13 @@ MediaSessionPlaybackState MediaStatusManager::GetCurrentDeclaredPlaybackState()
+ }
+ 
+ void MediaStatusManager::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                                    MediaPlaybackState aState) {
+-  LOG("UpdateMediaPlaybackState {} for context {}", EnumValueToString(aState),
+-      aBrowsingContextId);
++                                                    MediaPlaybackState aState,
++                                                    bool aIsVideo) {
++  LOG("UpdateMediaPlaybackState {} (isVideo={}) for context {}",
++      EnumValueToString(aState), aIsVideo, aBrowsingContextId);
+   const bool oldPlaying = mPlaybackStatusDelegate.IsPlaying();
+-  mPlaybackStatusDelegate.UpdateMediaPlaybackState(aBrowsingContextId, aState);
++  mPlaybackStatusDelegate.UpdateMediaPlaybackState(aBrowsingContextId, aState,
++                                                   aIsVideo);
+ 
+   // Playback state doesn't change, we don't need to update the guessed playback
+   // state. This is used to prevent the state from changing from `none` to
+@@ -550,6 +552,10 @@ bool MediaStatusManager::IsAnyMediaBeingControlled() const {
+   return mPlaybackStatusDelegate.IsAnyMediaBeingControlled();
+ }
+ 
++bool MediaStatusManager::IsAnyVideoMediaPlaying() const {
++  return mPlaybackStatusDelegate.IsAnyVideoMediaPlaying();
++}
++
+ AudioSessionType MediaStatusManager::EffectiveTypeForBc(
+     uint64_t aBrowsingContextId) const {
+   return mPlaybackStatusDelegate.EffectiveTypeForBc(aBrowsingContextId);
+diff --git a/dom/media/mediacontrol/MediaStatusManager.h b/dom/media/mediacontrol/MediaStatusManager.h
+index 2d805b1541..d6efe9cc69 100644
+--- a/dom/media/mediacontrol/MediaStatusManager.h
++++ b/dom/media/mediacontrol/MediaStatusManager.h
+@@ -72,8 +72,11 @@ class IMediaInfoUpdater {
+   // (1) `eStart` MUST be the first state and `eStop` MUST be the last state
+   // (2) Do not notify same state again
+   // (3) `ePaused` can only be notified after notifying `ePlayed`.
++  // (4) `aIsVideo` tells whether the notifying media is a video element, and is
++  //     only meaningful for `ePlayed`/`ePaused`.
+   virtual void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                          MediaPlaybackState aState) = 0;
++                                          MediaPlaybackState aState,
++                                          bool aIsVideo) = 0;
+ 
+   // Use this method to update the audible state of controlled media, and MUST
+   // follow the following rules in which `audible` and `inaudible` should be a
+@@ -159,7 +162,8 @@ class MediaStatusManager : public IMediaInfoUpdater {
+ 
+   // IMediaInfoUpdater's methods
+   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
+-                                  MediaPlaybackState aState) override;
++                                  MediaPlaybackState aState,
++                                  bool aIsVideo) override;
+   void NotifyMediaAudibleChanged(
+       uint64_t aBrowsingContextId, MediaAudibleState aState,
+       ControlType aType = ControlType::eControllable,
+@@ -194,6 +198,7 @@ class MediaStatusManager : public IMediaInfoUpdater {
+   bool IsMediaAudible() const;
+   bool IsMediaPlaying() const;
+   bool IsAnyMediaBeingControlled() const;
++  bool IsAnyVideoMediaPlaying() const;
+ 
+   // Resolve the audio-session type for the given browsing context from its
+   // currently audible sources. Returns Ambient when the browsing context has
+diff --git a/dom/media/mediacontrol/tests/gtest/TestMediaController.cpp b/dom/media/mediacontrol/tests/gtest/TestMediaController.cpp
+index 2fdcd41a81..d579cbf054 100644
+--- a/dom/media/mediacontrol/tests/gtest/TestMediaController.cpp
++++ b/dom/media/mediacontrol/tests/gtest/TestMediaController.cpp
+@@ -29,19 +29,23 @@ TEST(MediaController, IsAnyMediaBeingControlled)
+   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
+ 
+   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                         MediaPlaybackState::eStarted);
++                                         MediaPlaybackState::eStarted,
++                                         /* aIsVideo = */ false);
+   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
+ 
+   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                         MediaPlaybackState::eStarted);
++                                         MediaPlaybackState::eStarted,
++                                         /* aIsVideo = */ false);
+   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
+ 
+   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                         MediaPlaybackState::eStopped);
++                                         MediaPlaybackState::eStopped,
++                                         /* aIsVideo = */ false);
+   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
+ 
+   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                         MediaPlaybackState::eStopped);
++                                         MediaPlaybackState::eStopped,
++                                         /* aIsVideo = */ false);
+   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
+ }
+ 
+@@ -50,14 +54,16 @@ class FakeControlledMedia final {
+   explicit FakeControlledMedia(MediaController* aController)
+       : mController(aController) {
+     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                            MediaPlaybackState::eStarted);
++                                         MediaPlaybackState::eStarted,
++                                         /* aIsVideo = */ false);
+   }
+ 
+   void SetPlaying(MediaPlaybackState aState) {
+     if (mPlaybackState == aState) {
+       return;
+     }
+-    mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID, aState);
++    mController->NotifyMediaPlaybackChanged(
++        FAKE_CONTEXT_ID, aState, /* aIsVideo = */ false);
+     mPlaybackState = aState;
+   }
+ 
+@@ -72,10 +78,12 @@ class FakeControlledMedia final {
+   ~FakeControlledMedia() {
+     if (mPlaybackState == MediaPlaybackState::ePlayed) {
+       mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                              MediaPlaybackState::ePaused);
++                                         MediaPlaybackState::ePaused,
++                                         /* aIsVideo = */ false);
+     }
+     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
+-                                            MediaPlaybackState::eStopped);
++                                         MediaPlaybackState::eStopped,
++                                         /* aIsVideo = */ false);
+   }
+ 
+  private:
+diff --git a/dom/media/mediacontrol/tests/gtest/TestMediaPlaybackStatus.cpp b/dom/media/mediacontrol/tests/gtest/TestMediaPlaybackStatus.cpp
+index 42064f73e6..3e0a890705 100644
+--- a/dom/media/mediacontrol/tests/gtest/TestMediaPlaybackStatus.cpp
++++ b/dom/media/mediacontrol/tests/gtest/TestMediaPlaybackStatus.cpp
+@@ -148,7 +148,8 @@ TEST(MediaPlaybackStatus, OwnerStickyAfterSoleControllableBecomesInaudible)
+   MediaPlaybackStatus status;
+   // Keep the BC alive past the audibility transition so the entry isn't
+   // collapsed by the cleanup path — this exercises pure owner derivation.
+-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
++  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
++                                  /* aIsVideo = */ false);
+   status.UpdateMediaAudibleState(kBcA, MediaAudibleState::eAudible,
+                                  ControlType::eControllable,
+                                  AudioSessionType::Playback);
+@@ -169,7 +170,8 @@ TEST(MediaPlaybackStatus, ControllableLifecycle_OwnerAndEntryClearedAtStop)
+   // re-create a fresh entry and DecreaseControlledMediaNum would hit
+   // MOZ_DIAGNOSTIC_ASSERT.
+   MediaPlaybackStatus status;
+-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
++  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
++                                  /* aIsVideo = */ false);
+   status.UpdateMediaAudibleState(kBcA, MediaAudibleState::eAudible,
+                                  ControlType::eControllable,
+                                  AudioSessionType::Playback);
+@@ -182,7 +184,8 @@ TEST(MediaPlaybackStatus, ControllableLifecycle_OwnerAndEntryClearedAtStop)
+   // controlled media.
+   EXPECT_NE(status.GetAudibleSourcesForTesting(kBcA), nullptr);
+ 
+-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStopped);
++  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStopped,
++                                  /* aIsVideo = */ false);
+   EXPECT_EQ(status.GetAudibleSourcesForTesting(kBcA), nullptr);
+   EXPECT_EQ(status.GetActiveAudibleControllableContextId(), Nothing());
+ }
+@@ -211,7 +214,8 @@ TEST(MediaPlaybackStatus, EffectiveTypeForBc_UnknownOrSilentBcReturnsDefault)
+   // spec default.
+   MediaPlaybackStatus status;
+   EXPECT_EQ(status.EffectiveTypeForBc(kBcA), DefaultAudioSessionType());
+-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
++  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
++                                  /* aIsVideo = */ false);
+   EXPECT_EQ(status.EffectiveTypeForBc(kBcA), DefaultAudioSessionType());
+ }
+ 
+diff --git a/dom/media/mediaelement/HTMLMediaElement.cpp b/dom/media/mediaelement/HTMLMediaElement.cpp
+index 9fcf42abcd..b007e44bb1 100644
+--- a/dom/media/mediaelement/HTMLMediaElement.cpp
++++ b/dom/media/mediaelement/HTMLMediaElement.cpp
+@@ -679,7 +679,11 @@ class HTMLMediaElement::MediaControlKeyListener final
+                      dom::EnumValueToString(aState));
+     MOZ_ASSERT(mState != aState, "Should not notify same state again!");
+     mState = aState;
+-    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState);
++    // Report the element type so GeckoView can tell audio and video apart
++    // (MediaSession.isVideo) and gate the driving-video restriction by it.
++    const bool isVideo = Owner() ? Owner()->IsVideo() : false;
++    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState,
++                                              isVideo);
+ 
+     if (aState == MediaPlaybackState::ePlayed ||
+         aState == MediaPlaybackState::ePaused) {
+@@ -8873,32 +8877,26 @@ void HTMLMediaElement::StartMediaControlKeyListenerIfNeeded() {
+     return;
+   }
+ 
+-  // Carota customization (GeckoView 157): do not register real-time stream
+-  // sources with the media controller, matching the 142 custom AAR.
++  // Carota customization (GeckoView 157): keep the upstream exclusion for
++  // real-time stream sources.
+   if (mSrcStream) {
+     MEDIACONTROL_LOG("Not listening because media is real-time");
+     return;
+   }
+ 
+-  // Carota customization (GeckoView 157): only video elements register with the
+-  // media controller; audio-only elements never do. The embedder uses
+-  // MediaSession.Delegate.onPlay as "a video started playing" for the
+-  // driving-video restriction (MainActivity.MediaSessionDelegate.onPlay pauses
+-  // on receipt). If audio-only media also reported Playing, music/podcasts
+-  // would be mistaken for video and paused.
+-  if (!IsVideo()) {
+-    MEDIACONTROL_LOG("Not listening because it's an audio element");
++  // Carota customization (GeckoView 157): video elements register regardless of
++  // audibility, so muted / zero-volume / autoplay-muted <video> still fire
++  // MediaSession.Delegate.onPlay (the driving-video restriction relies on it).
++  // Audio-only elements register only while audible: the embedder still gets a
++  // MediaSession so it can pause/play audio, without audio being treated as
++  // video by the restriction.
++  if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
++    MEDIACONTROL_LOG("Not listening because media is inaudible");
+     return;
+   }
+ 
+-  // Carota customization (GeckoView 157): video exempts the audibility check --
+-  // muted / zero-volume / autoplay-muted <video> must register as well,
+-  // otherwise onPlay never fires and the driving restriction misses them.
+-  // Upstream delays the start while a controllable source is inaudible (and not
+-  // in PiP/fullscreen), which is exactly what filters muted video out.
+   // Short clips are still filtered later by the ControlType::eUncontrollable
+-  // branch of MediaControlKeyListener::Start(), equivalent to the duration
+-  // threshold used by the 142 custom AAR.
++  // branch of MediaControlKeyListener::Start().
+   mMediaControlKeyListener->Start();
+ }
+ 
+diff --git a/mobile/android/geckoview/api.txt b/mobile/android/geckoview/api.txt
+index e44504de1d..13d1f638b8 100644
+--- a/mobile/android/geckoview/api.txt
++++ b/mobile/android/geckoview/api.txt
+@@ -2386,6 +2386,7 @@ package org.mozilla.geckoview {
+   @UiThread public class MediaSession {
+     ctor protected MediaSession(GeckoSession);
+     method public boolean isActive();
++    method public boolean isVideo();
+     method public void muteAudio(boolean);
+     method public void nextTrack();
+     method public void notifySystemAudioFocusChange(int);
+diff --git a/mobile/android/geckoview/src/main/java/org/mozilla/geckoview/MediaSession.java b/mobile/android/geckoview/src/main/java/org/mozilla/geckoview/MediaSession.java
+index cf22106228..1ea901bc9d 100644
+--- a/mobile/android/geckoview/src/main/java/org/mozilla/geckoview/MediaSession.java
++++ b/mobile/android/geckoview/src/main/java/org/mozilla/geckoview/MediaSession.java
+@@ -31,6 +31,7 @@ public class MediaSession {
+ 
+   private final GeckoSession mSession;
+   private boolean mIsActive;
++  private boolean mHasVideo;
+ 
+   /**
+    * Create a new MediaSession for the given GeckoSession.
+@@ -59,6 +60,24 @@ public class MediaSession {
+     mIsActive = active;
+   }
+ 
++  /**
++   * Get whether the currently playing media is a video. The value is updated whenever playback
++   * state events are delivered.
++   *
++   * <p>Note that audio-only media also triggers {@link Delegate#onPlay}, use this method to tell
++   * audio and video apart.
++   *
++   * @return True if video media is currently playing in this session, false for audio-only media or
++   *     when nothing is playing.
++   */
++  public boolean isVideo() {
++    return mHasVideo;
++  }
++
++  /* package */ void setHasVideo(final boolean hasVideo) {
++    mHasVideo = hasVideo;
++  }
++
+   /** Pause playback for the media session. */
+   public void pause() {
+     if (DEBUG) {
+@@ -683,9 +702,11 @@ public class MediaSession {
+ 
+       if (ACTIVATED_EVENT.equals(event)) {
+         mMediaSession.setActive(true);
++        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
+         delegate.onActivated(mSession, mMediaSession);
+       } else if (DEACTIVATED_EVENT.equals(event)) {
+         mMediaSession.setActive(false);
++        mMediaSession.setHasVideo(false);
+         delegate.onDeactivated(mSession, mMediaSession);
+       } else if (METADATA_EVENT.equals(event)) {
+         final Metadata meta = Metadata.fromBundle(message.getBundle("metadata"));
+@@ -694,10 +715,13 @@ public class MediaSession {
+         final PositionState state = PositionState.fromBundle(message.getBundle("state"));
+         delegate.onPositionState(mSession, mMediaSession, state);
+       } else if (PLAYBACK_NONE_EVENT.equals(event)) {
++        mMediaSession.setHasVideo(false);
+         delegate.onStop(mSession, mMediaSession);
+       } else if (PLAYBACK_PAUSED_EVENT.equals(event)) {
++        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
+         delegate.onPause(mSession, mMediaSession);
+       } else if (PLAYBACK_PLAYING_EVENT.equals(event)) {
++        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
+         delegate.onPlay(mSession, mMediaSession);
+       } else if (FEATURES_EVENT.equals(event)) {
+         final long features = Feature.fromBundle(message.getBundle("features"));
+diff --git a/mobile/shared/modules/geckoview/GeckoViewMediaControl.sys.mjs b/mobile/shared/modules/geckoview/GeckoViewMediaControl.sys.mjs
+index da9f86ea8c..08077e2d17 100644
+--- a/mobile/shared/modules/geckoview/GeckoViewMediaControl.sys.mjs
++++ b/mobile/shared/modules/geckoview/GeckoViewMediaControl.sys.mjs
+@@ -28,6 +28,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
+       this,
+       options
+     );
++    this.controller.addEventListener("videomediachange", this, options);
+   }
+ 
+   onDestroyBrowser() {
+@@ -43,6 +44,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
+       "effectiveaudiosessiontypechange",
+       this
+     );
++    this.controller.removeEventListener("videomediachange", this);
+   }
+ 
+   onEnable() {
+@@ -154,6 +156,9 @@ export class GeckoViewMediaControl extends GeckoViewModule {
+       case "effectiveaudiosessiontypechange":
+         this.handleEffectiveAudioSessionTypeChanged();
+         break;
++      case "videomediachange":
++        this.handleVideoMediaChanged();
++        break;
+       default:
+         warn`Unknown event type ${aEvent.type}`;
+         break;
+@@ -190,13 +195,17 @@ export class GeckoViewMediaControl extends GeckoViewModule {
+   handleActivated() {
+     debug`handleActivated`;
+ 
+-    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Activated");
++    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Activated", {
++      isVideo: this.controller.hasVideoMedia,
++    });
+   }
+ 
+   handleDeactivated() {
+     debug`handleDeactivated`;
+ 
+-    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Deactivated");
++    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Deactivated", {
++      isVideo: this.controller.hasVideoMedia,
++    });
+   }
+ 
+   handlePositionStateChanged(aEvent) {
+@@ -268,7 +277,22 @@ export class GeckoViewMediaControl extends GeckoViewModule {
+       return;
+     }
+ 
+-    this.eventDispatcher.sendRequest(type);
++    // Carota customization: always report Playing (including audible audio).
++    // onPlay means "media is playing"; the embedder tells audio and video
++    // apart by the isVideo payload and only applies the driving restriction
++    // when isVideo is true. Paused/None are always reported so that audio
++    // focus release and session state stay in sync.
++    this.eventDispatcher.sendRequest(type, {
++      isVideo: this.controller.hasVideoMedia,
++    });
++  }
++
++  // Re-send the current state when the video state changes without the
++  // aggregated playback state changing, so a video starting while audio is
++  // already playing still produces onPlay with isVideo=true.
++  handleVideoMediaChanged() {
++    debug`handleVideoMediaChanged ${this.controller.hasVideoMedia}`;
++    this.handlePlaybackStateChanged();
+   }
+ }
+ 
+diff --git a/xpcom/ds/StaticAtoms.py b/xpcom/ds/StaticAtoms.py
+index 360b013fe9..1bba674113 100644
+--- a/xpcom/ds/StaticAtoms.py
++++ b/xpcom/ds/StaticAtoms.py
+@@ -2487,6 +2487,7 @@ STATIC_ATOMS = [
+     Atom("onpositionstatechange", "onpositionstatechange"),
+     Atom("oneffectiveaudiosessiontypechange", "oneffectiveaudiosessiontypechange"),
+     Atom("onsupportedkeyschange", "onsupportedkeyschange"),
++    Atom("onvideomediachange", "onvideomediachange"),
+     # Media query prefs for UA sheets.
+     Atom("dom_image_sizes_auto_enabled", "dom.image.sizes_auto.enabled"),
+     Atom("mathml_legacy_mathvariant_attribute_disabled", "mathml.legacy_mathvariant_attribute.disabled"),

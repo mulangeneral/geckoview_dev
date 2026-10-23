@@ -156,3 +156,17 @@ carota/
     ├── init-carota-geckoview.gradle.kts    # 零工程改动的依赖替换脚本
     └── README.md                           # 接入说明
 ```
+## 9. isVideo / 音频媒体控制（增补）
+
+`geckoview-157-src` 在 157 重构后的媒体控制代码上补齐了 main 分支的 isVideo 能力
+（对应 main 的 `ec8f9d9df4` + `806d1bac9b` + `f97502958e`）：
+
+- `MediaSession.isVideo()` 与事件里的 `isVideo` 字段：app 用它区分音视频；
+- 视频元素（含静音 / 音量 0）不受可听性限制，照常触发 `onPlay`；
+- 可听音频也会注册媒体控制，因此可被 `MediaSession.pause()/play()` 暂停和续播；
+- 视频起播/停播但聚合播放态未变时补发 `videomediachange`，避免“音频在播时视频起播”漏报。
+
+配套的应用侧约束：`MainActivity.onPlay` 必须按 `mediaSession.isVideo` 门控行车抑制，
+否则“受限状态下音频起播”会被误暂停。
+
+补丁文件：`carota/patches/0002-media-control-isvideo-157.patch`（在 `9359b6ac5b` 之上）。
