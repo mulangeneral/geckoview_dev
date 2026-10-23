@@ -169,4 +169,4 @@ carota/
 配套的应用侧约束：`MainActivity.onPlay` 必须按 `mediaSession.isVideo` 门控行车抑制，
 否则“受限状态下音频起播”会被误暂停。
 
-补丁文件：`carota/patches/0002-media-control-isvideo-157.patch`（在 `9359b6ac5b` 之上）。
+补丁文件：`carota/patches/0002-media-control-isvideo-157.patch`（相对上游导入提交 `cea3203f62`，不含 `carota/` 自身，可直接用于 157 源码或后续版本 rebase）。
