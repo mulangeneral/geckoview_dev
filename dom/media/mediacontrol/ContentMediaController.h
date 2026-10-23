@@ -70,7 +70,8 @@ class ContentMediaAgent : public IMediaInfoUpdater {
 
   // IMediaInfoUpdater Methods
   void NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                  MediaPlaybackState aState) override;
+                                  MediaPlaybackState aState,
+                                  bool aIsVideo) override;
   void NotifyMediaAudibleChanged(
       uint64_t aBrowsingContextId, MediaAudibleState aState,
       ControlType aType = ControlType::eControllable,

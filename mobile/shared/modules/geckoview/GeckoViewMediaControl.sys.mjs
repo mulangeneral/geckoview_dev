@@ -28,6 +28,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       this,
       options
     );
+    this.controller.addEventListener("videomediachange", this, options);
   }
 
   onDestroyBrowser() {
@@ -43,6 +44,7 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       "effectiveaudiosessiontypechange",
       this
     );
+    this.controller.removeEventListener("videomediachange", this);
   }
 
   onEnable() {
@@ -154,6 +156,9 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       case "effectiveaudiosessiontypechange":
         this.handleEffectiveAudioSessionTypeChanged();
         break;
+      case "videomediachange":
+        this.handleVideoMediaChanged();
+        break;
       default:
         warn`Unknown event type ${aEvent.type}`;
         break;
@@ -190,13 +195,17 @@ export class GeckoViewMediaControl extends GeckoViewModule {
   handleActivated() {
     debug`handleActivated`;
 
-    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Activated");
+    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Activated", {
+      isVideo: this.controller.hasVideoMedia,
+    });
   }
 
   handleDeactivated() {
     debug`handleDeactivated`;
 
-    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Deactivated");
+    this.eventDispatcher.sendRequest("GeckoView:MediaSession:Deactivated", {
+      isVideo: this.controller.hasVideoMedia,
+    });
   }
 
   handlePositionStateChanged(aEvent) {
@@ -268,7 +277,22 @@ export class GeckoViewMediaControl extends GeckoViewModule {
       return;
     }
 
-    this.eventDispatcher.sendRequest(type);
+    // Carota customization: always report Playing (including audible audio).
+    // onPlay means "media is playing"; the embedder tells audio and video
+    // apart by the isVideo payload and only applies the driving restriction
+    // when isVideo is true. Paused/None are always reported so that audio
+    // focus release and session state stay in sync.
+    this.eventDispatcher.sendRequest(type, {
+      isVideo: this.controller.hasVideoMedia,
+    });
+  }
+
+  // Re-send the current state when the video state changes without the
+  // aggregated playback state changing, so a video starting while audio is
+  // already playing still produces onPlay with isVideo=true.
+  handleVideoMediaChanged() {
+    debug`handleVideoMediaChanged ${this.controller.hasVideoMedia}`;
+    this.handlePlaybackStateChanged();
   }
 }
 

@@ -47,6 +47,8 @@ interface MediaController : EventTarget {
   readonly attribute boolean isAudible;
   readonly attribute boolean isMuted;
   readonly attribute boolean isPlaying;
+  // True if any video media is currently playing in this tab. (Carota patch)
+  readonly attribute boolean hasVideoMedia;
   readonly attribute boolean isAnyMediaBeingControlled;
   readonly attribute MediaSessionPlaybackState playbackState;
 
@@ -70,6 +72,7 @@ interface MediaController : EventTarget {
   // Following events would only be dispatched after controller is active.
   attribute EventHandler onmetadatachange;
   attribute EventHandler onplaybackstatechange;
+  attribute EventHandler onvideomediachange;
   attribute EventHandler onpositionstatechange;
   attribute EventHandler onsupportedkeyschange;
 

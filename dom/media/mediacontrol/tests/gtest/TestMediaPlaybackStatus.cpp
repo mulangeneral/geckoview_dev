@@ -148,7 +148,8 @@ TEST(MediaPlaybackStatus, OwnerStickyAfterSoleControllableBecomesInaudible)
   MediaPlaybackStatus status;
   // Keep the BC alive past the audibility transition so the entry isn't
   // collapsed by the cleanup path — this exercises pure owner derivation.
-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
+  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
+                                  /* aIsVideo = */ false);
   status.UpdateMediaAudibleState(kBcA, MediaAudibleState::eAudible,
                                  ControlType::eControllable,
                                  AudioSessionType::Playback);
@@ -169,7 +170,8 @@ TEST(MediaPlaybackStatus, ControllableLifecycle_OwnerAndEntryClearedAtStop)
   // re-create a fresh entry and DecreaseControlledMediaNum would hit
   // MOZ_DIAGNOSTIC_ASSERT.
   MediaPlaybackStatus status;
-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
+  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
+                                  /* aIsVideo = */ false);
   status.UpdateMediaAudibleState(kBcA, MediaAudibleState::eAudible,
                                  ControlType::eControllable,
                                  AudioSessionType::Playback);
@@ -182,7 +184,8 @@ TEST(MediaPlaybackStatus, ControllableLifecycle_OwnerAndEntryClearedAtStop)
   // controlled media.
   EXPECT_NE(status.GetAudibleSourcesForTesting(kBcA), nullptr);
 
-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStopped);
+  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStopped,
+                                  /* aIsVideo = */ false);
   EXPECT_EQ(status.GetAudibleSourcesForTesting(kBcA), nullptr);
   EXPECT_EQ(status.GetActiveAudibleControllableContextId(), Nothing());
 }
@@ -211,7 +214,8 @@ TEST(MediaPlaybackStatus, EffectiveTypeForBc_UnknownOrSilentBcReturnsDefault)
   // spec default.
   MediaPlaybackStatus status;
   EXPECT_EQ(status.EffectiveTypeForBc(kBcA), DefaultAudioSessionType());
-  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted);
+  status.UpdateMediaPlaybackState(kBcA, MediaPlaybackState::eStarted,
+                                  /* aIsVideo = */ false);
   EXPECT_EQ(status.EffectiveTypeForBc(kBcA), DefaultAudioSessionType());
 }
 

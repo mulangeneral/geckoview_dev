@@ -15,9 +15,10 @@ namespace mozilla::dom {
               "MediaPlaybackStatus={}, " msg, fmt::ptr(this), ##__VA_ARGS__)
 
 void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
-                                                   MediaPlaybackState aState) {
-  LOG("Update playback state '{}' for context {}", EnumValueToString(aState),
-      aContextId);
+                                                   MediaPlaybackState aState,
+                                                   bool aIsVideo) {
+  LOG("Update playback state '{}' (isVideo={}) for context {}",
+      EnumValueToString(aState), aIsVideo, aContextId);
   MOZ_ASSERT(NS_IsMainThread());
 
   ContextMediaInfo& info = GetNotNullContextInfo(aContextId);
@@ -27,9 +28,15 @@ void MediaPlaybackStatus::UpdateMediaPlaybackState(uint64_t aContextId,
     info.DecreaseControlledMediaNum();
   } else if (aState == MediaPlaybackState::ePlayed) {
     info.IncreasePlayingMediaNum();
+    if (aIsVideo) {
+      info.IncreasePlayingVideoMediaNum();
+    }
   } else {
     MOZ_ASSERT(aState == MediaPlaybackState::ePaused);
     info.DecreasePlayingMediaNum();
+    if (aIsVideo) {
+      info.DecreasePlayingVideoMediaNum();
+    }
   }
 
   LOG("UpdateMediaPlaybackState for context {} (controlled {} audible {})",
@@ -58,6 +65,7 @@ void MediaPlaybackStatus::MaybeDestroyContextInfo(
       aInfo.IsAudible()) {
     return;
   }
+  MOZ_ASSERT(!aInfo.IsAnyVideoMediaPlaying());
   DestroyContextInfo(aContextId);
 }
 
@@ -118,6 +126,15 @@ bool MediaPlaybackStatus::IsPlaying() const {
   return std::any_of(mContextInfoMap.Values().cbegin(),
                      mContextInfoMap.Values().cend(),
                      [](const auto& info) { return info->IsPlaying(); });
+}
+
+bool MediaPlaybackStatus::IsAnyVideoMediaPlaying() const {
+  MOZ_ASSERT(NS_IsMainThread());
+  return std::any_of(mContextInfoMap.Values().cbegin(),
+                     mContextInfoMap.Values().cend(),
+                     [](const auto& info) {
+                       return info->IsAnyVideoMediaPlaying();
+                     });
 }
 
 bool MediaPlaybackStatus::IsAudible() const {

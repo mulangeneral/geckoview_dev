@@ -253,6 +253,8 @@ bool MediaController::IsAudible() const {
 
 bool MediaController::IsPlaying() const { return IsMediaPlaying(); }
 
+bool MediaController::HasVideoMedia() const { return IsAnyVideoMediaPlaying(); }
+
 bool MediaController::IsActive() const { return mIsActive; };
 
 bool MediaController::ShouldPropagateActionToAllContexts(
@@ -348,13 +350,23 @@ void MediaController::Shutdown() {
 }
 
 void MediaController::NotifyMediaPlaybackChanged(uint64_t aBrowsingContextId,
-                                                 MediaPlaybackState aState) {
+                                                 MediaPlaybackState aState,
+                                                 bool aIsVideo) {
   if (mShutdown) {
     return;
   }
-  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState);
+  const bool oldHasVideoMedia = HasVideoMedia();
+  MediaStatusManager::NotifyMediaPlaybackChanged(aBrowsingContextId, aState,
+                                                 aIsVideo);
   UpdateDeactivationTimerIfNeeded();
   UpdateActivatedStateIfNeeded();
+  // If the aggregated playback state did not change but the video state did,
+  // notify the embedder so it can refresh its cached `isVideo`. This has to run
+  // after UpdateActivatedStateIfNeeded(), otherwise the first activation is
+  // swallowed by the mIsActive guard.
+  if (HasVideoMedia() != oldHasVideoMedia) {
+    DispatchAsyncEvent(u"videomediachange"_ns);
+  }
 }
 
 void MediaController::UpdateDeactivationTimerIfNeeded() {

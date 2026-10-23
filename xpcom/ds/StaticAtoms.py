@@ -2487,6 +2487,7 @@ STATIC_ATOMS = [
     Atom("onpositionstatechange", "onpositionstatechange"),
     Atom("oneffectiveaudiosessiontypechange", "oneffectiveaudiosessiontypechange"),
     Atom("onsupportedkeyschange", "onsupportedkeyschange"),
+    Atom("onvideomediachange", "onvideomediachange"),
     # Media query prefs for UA sheets.
     Atom("dom_image_sizes_auto_enabled", "dom.image.sizes_auto.enabled"),
     Atom("mathml_legacy_mathvariant_attribute_disabled", "mathml.legacy_mathvariant_attribute.disabled"),

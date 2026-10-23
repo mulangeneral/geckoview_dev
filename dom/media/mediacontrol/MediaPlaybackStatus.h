@@ -79,7 +79,8 @@ struct AudibleSource {
  */
 class MediaPlaybackStatus final {
  public:
-  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState);
+  void UpdateMediaPlaybackState(uint64_t aContextId, MediaPlaybackState aState,
+                                bool aIsVideo);
 
   // Returns true if the audio-focus owner shifted as a side-effect.
   bool UpdateMediaAudibleState(uint64_t aContextId, MediaAudibleState aState,
@@ -92,6 +93,7 @@ class MediaPlaybackStatus final {
   bool IsPlaying() const;
   bool IsAudible() const;
   bool IsAnyMediaBeingControlled() const;
+  bool IsAnyVideoMediaPlaying() const;
   Maybe<PositionState> GuessedMediaPositionState(
       Maybe<uint64_t> aPreferredContextId) const;
 
@@ -150,6 +152,19 @@ class MediaPlaybackStatus final {
 #endif
       mPlayingMediaNum--;
     }
+    // Number of playing video media, used to tell audio and video apart.
+    void IncreasePlayingVideoMediaNum() {
+#ifndef FUZZING_SNAPSHOT
+      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum < mPlayingMediaNum);
+#endif
+      mPlayingVideoMediaNum++;
+    }
+    void DecreasePlayingVideoMediaNum() {
+#ifndef FUZZING_SNAPSHOT
+      MOZ_DIAGNOSTIC_ASSERT(mPlayingVideoMediaNum > 0);
+#endif
+      mPlayingVideoMediaNum--;
+    }
 
     void AddAudibleSource(ControlType aControlType,
                           AudioSessionType aSessionType);
@@ -159,6 +174,7 @@ class MediaPlaybackStatus final {
     bool HasAudibleSourceOfControlType(ControlType aControlType) const;
 
     bool IsPlaying() const { return mPlayingMediaNum > 0; }
+    bool IsAnyVideoMediaPlaying() const { return mPlayingVideoMediaNum > 0; }
     bool IsAnyMediaBeingControlled() const { return mControlledMediaNum > 0; }
     uint32_t ControlledMediaNum() const { return mControlledMediaNum; }
     size_t AudibleSourceCount() const { return mAudibleSources.Length(); }
@@ -181,11 +197,12 @@ class MediaPlaybackStatus final {
 
    private:
     /**
-     * The possible value for these two numbers should follow this rule,
-     * mControlledMediaNum >= mPlayingMediaNum.
+     * The possible value for these numbers should follow this rule,
+     * mControlledMediaNum >= mPlayingMediaNum >= mPlayingVideoMediaNum.
      */
     uint32_t mControlledMediaNum = 0;
     uint32_t mPlayingMediaNum = 0;
+    uint32_t mPlayingVideoMediaNum = 0;
     uint64_t mContextId = 0;
 
     /**

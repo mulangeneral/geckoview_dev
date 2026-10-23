@@ -31,6 +31,7 @@ public class MediaSession {
 
   private final GeckoSession mSession;
   private boolean mIsActive;
+  private boolean mHasVideo;
 
   /**
    * Create a new MediaSession for the given GeckoSession.
@@ -57,6 +58,24 @@ public class MediaSession {
 
   /* package */ void setActive(final boolean active) {
     mIsActive = active;
+  }
+
+  /**
+   * Get whether the currently playing media is a video. The value is updated whenever playback
+   * state events are delivered.
+   *
+   * <p>Note that audio-only media also triggers {@link Delegate#onPlay}, use this method to tell
+   * audio and video apart.
+   *
+   * @return True if video media is currently playing in this session, false for audio-only media or
+   *     when nothing is playing.
+   */
+  public boolean isVideo() {
+    return mHasVideo;
+  }
+
+  /* package */ void setHasVideo(final boolean hasVideo) {
+    mHasVideo = hasVideo;
   }
 
   /** Pause playback for the media session. */
@@ -683,9 +702,11 @@ public class MediaSession {
 
       if (ACTIVATED_EVENT.equals(event)) {
         mMediaSession.setActive(true);
+        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
         delegate.onActivated(mSession, mMediaSession);
       } else if (DEACTIVATED_EVENT.equals(event)) {
         mMediaSession.setActive(false);
+        mMediaSession.setHasVideo(false);
         delegate.onDeactivated(mSession, mMediaSession);
       } else if (METADATA_EVENT.equals(event)) {
         final Metadata meta = Metadata.fromBundle(message.getBundle("metadata"));
@@ -694,10 +715,13 @@ public class MediaSession {
         final PositionState state = PositionState.fromBundle(message.getBundle("state"));
         delegate.onPositionState(mSession, mMediaSession, state);
       } else if (PLAYBACK_NONE_EVENT.equals(event)) {
+        mMediaSession.setHasVideo(false);
         delegate.onStop(mSession, mMediaSession);
       } else if (PLAYBACK_PAUSED_EVENT.equals(event)) {
+        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
         delegate.onPause(mSession, mMediaSession);
       } else if (PLAYBACK_PLAYING_EVENT.equals(event)) {
+        mMediaSession.setHasVideo(message.getBoolean("isVideo", false));
         delegate.onPlay(mSession, mMediaSession);
       } else if (FEATURES_EVENT.equals(event)) {
         final long features = Feature.fromBundle(message.getBundle("features"));

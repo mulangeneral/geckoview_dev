@@ -679,7 +679,11 @@ class HTMLMediaElement::MediaControlKeyListener final
                      dom::EnumValueToString(aState));
     MOZ_ASSERT(mState != aState, "Should not notify same state again!");
     mState = aState;
-    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState);
+    // Report the element type so GeckoView can tell audio and video apart
+    // (MediaSession.isVideo) and gate the driving-video restriction by it.
+    const bool isVideo = Owner() ? Owner()->IsVideo() : false;
+    mControlAgent->NotifyMediaPlaybackChanged(mOwnerBrowsingContextId, mState,
+                                              isVideo);
 
     if (aState == MediaPlaybackState::ePlayed ||
         aState == MediaPlaybackState::ePaused) {
@@ -8873,32 +8877,26 @@ void HTMLMediaElement::StartMediaControlKeyListenerIfNeeded() {
     return;
   }
 
-  // Carota customization (GeckoView 157): do not register real-time stream
-  // sources with the media controller, matching the 142 custom AAR.
+  // Carota customization (GeckoView 157): keep the upstream exclusion for
+  // real-time stream sources.
   if (mSrcStream) {
     MEDIACONTROL_LOG("Not listening because media is real-time");
     return;
   }
 
-  // Carota customization (GeckoView 157): only video elements register with the
-  // media controller; audio-only elements never do. The embedder uses
-  // MediaSession.Delegate.onPlay as "a video started playing" for the
-  // driving-video restriction (MainActivity.MediaSessionDelegate.onPlay pauses
-  // on receipt). If audio-only media also reported Playing, music/podcasts
-  // would be mistaken for video and paused.
-  if (!IsVideo()) {
-    MEDIACONTROL_LOG("Not listening because it's an audio element");
+  // Carota customization (GeckoView 157): video elements register regardless of
+  // audibility, so muted / zero-volume / autoplay-muted <video> still fire
+  // MediaSession.Delegate.onPlay (the driving-video restriction relies on it).
+  // Audio-only elements register only while audible: the embedder still gets a
+  // MediaSession so it can pause/play audio, without audio being treated as
+  // video by the restriction.
+  if (!IsVideo() && (!IsAudible() || ComputedVolume() == 0.0f)) {
+    MEDIACONTROL_LOG("Not listening because media is inaudible");
     return;
   }
 
-  // Carota customization (GeckoView 157): video exempts the audibility check --
-  // muted / zero-volume / autoplay-muted <video> must register as well,
-  // otherwise onPlay never fires and the driving restriction misses them.
-  // Upstream delays the start while a controllable source is inaudible (and not
-  // in PiP/fullscreen), which is exactly what filters muted video out.
   // Short clips are still filtered later by the ControlType::eUncontrollable
-  // branch of MediaControlKeyListener::Start(), equivalent to the duration
-  // threshold used by the 142 custom AAR.
+  // branch of MediaControlKeyListener::Start().
   mMediaControlKeyListener->Start();
 }
 

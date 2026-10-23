@@ -29,19 +29,23 @@ TEST(MediaController, IsAnyMediaBeingControlled)
   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStarted);
+                                         MediaPlaybackState::eStarted,
+                                         /* aIsVideo = */ false);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStarted);
+                                         MediaPlaybackState::eStarted,
+                                         /* aIsVideo = */ false);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStopped);
+                                         MediaPlaybackState::eStopped,
+                                         /* aIsVideo = */ false);
   ASSERT_TRUE(controller->IsAnyMediaBeingControlled());
 
   controller->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                         MediaPlaybackState::eStopped);
+                                         MediaPlaybackState::eStopped,
+                                         /* aIsVideo = */ false);
   ASSERT_TRUE(!controller->IsAnyMediaBeingControlled());
 }
 
@@ -50,14 +54,16 @@ class FakeControlledMedia final {
   explicit FakeControlledMedia(MediaController* aController)
       : mController(aController) {
     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                            MediaPlaybackState::eStarted);
+                                         MediaPlaybackState::eStarted,
+                                         /* aIsVideo = */ false);
   }
 
   void SetPlaying(MediaPlaybackState aState) {
     if (mPlaybackState == aState) {
       return;
     }
-    mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID, aState);
+    mController->NotifyMediaPlaybackChanged(
+        FAKE_CONTEXT_ID, aState, /* aIsVideo = */ false);
     mPlaybackState = aState;
   }
 
@@ -72,10 +78,12 @@ class FakeControlledMedia final {
   ~FakeControlledMedia() {
     if (mPlaybackState == MediaPlaybackState::ePlayed) {
       mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                              MediaPlaybackState::ePaused);
+                                         MediaPlaybackState::ePaused,
+                                         /* aIsVideo = */ false);
     }
     mController->NotifyMediaPlaybackChanged(FAKE_CONTEXT_ID,
-                                            MediaPlaybackState::eStopped);
+                                         MediaPlaybackState::eStopped,
+                                         /* aIsVideo = */ false);
   }
 
  private:

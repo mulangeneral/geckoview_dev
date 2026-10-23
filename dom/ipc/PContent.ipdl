@@ -1700,7 +1700,7 @@ parent:
     * controller.
     */
     async NotifyMediaPlaybackChanged(MaybeDiscardedBrowsingContext aContext,
-                                     MediaPlaybackState aState);
+                                     MediaPlaybackState aState, bool aIsVideo);
 
    /**
     * When media became audible or inaudible in content process, we have to
